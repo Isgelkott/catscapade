@@ -1,0 +1,9 @@
+[package]
+name = "catscapade"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+asefile = "0.3.8"
+image = "0.25.9"
+macroquad = "0.4.14"
