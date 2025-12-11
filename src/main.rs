@@ -1,4 +1,4 @@
-use std::sync::LazyLock;
+use std::{f32::consts::PI, sync::LazyLock};
 
 use asefile::AsepriteFile;
 use image::*;
@@ -61,7 +61,7 @@ struct Spritesheet {
     height: f32,
 }
 impl Spritesheet {
-    fn draw_from(&self, world_pos: Vec2, texture_coord: (u8, u8)) {
+    fn draw_from(&self, world_pos: Vec2, texture_coord: (u8, u8), scale: f32) {
         draw_texture_ex(
             &self.texture,
             world_pos.x,
@@ -74,57 +74,105 @@ impl Spritesheet {
                     w: self.widht,
                     h: self.height,
                 }),
+                dest_size: Some(vec2(self.widht, self.height) * scale),
                 ..Default::default()
             },
         )
     }
 }
 type Animation = (Vec<(Texture2D, u32)>, u32);
-
 struct PlayerAnimations {
     walk: Animation,
 }
-struct EntityAnimations {
-    walk: Animation,
-}
+const CAT_SPEED: f32 = 70.0;
+const FRICTION: f32 = 0.2;
 struct Player {
     pos: Vec2,
+    size: Vec2,
     direction: Vec2,
     animations: PlayerAnimations,
 }
 impl Player {
     fn new() -> Self {
+        let animations = PlayerAnimations {
+            walk: load_animation_from_tag(include_bytes!("../assets/cat.ase"), "walk"),
+        };
+
         Self {
             pos: Vec2::ZERO,
+            size: vec2(
+                animations.walk.0[0].0.width(),
+                animations.walk.0[0].0.height(),
+            ),
             direction: Vec2::ZERO,
-            animations: PlayerAnimations {
-                walk: load_animation_from_tag(include_bytes!("../assets/cat.ase"), "walk"),
-            },
+            animations,
         }
     }
-    fn update(&mut self) {
+    fn update(&mut self, map: &Map) {
         let mut animation = &self.animations.walk;
-        let mut flipped = (false, false);
+        let mut rotation = 0.0;
+        let mut direction = Vec2::ZERO;
         if is_key_down(KeyCode::A) {
-            self.direction.x += -1.0;
+            direction.x += -1.0;
             animation = &self.animations.walk;
-            flipped.0 = true;
+            rotation = PI * 1.5;
         }
         if is_key_down(KeyCode::D) {
-            self.direction.x += 1.0;
+            direction.x += 1.0;
             animation = &self.animations.walk;
+            rotation = PI / 2.0;
         }
         if is_key_down(KeyCode::S) {
-            self.direction.y += 1.0;
+            direction.y += 1.0;
             animation = &self.animations.walk;
-            flipped.1 = true;
+            rotation = PI;
         }
         if is_key_down(KeyCode::W) {
-            self.direction.y += -1.0;
+            direction.y += -1.0;
             animation = &self.animations.walk;
         }
-        self.direction = self.direction.lerp(Vec2::ZERO, 0.5);
+
+        self.direction += direction.normalize_or_zero() * CAT_SPEED * get_frame_time();
+        let collision_points = [
+            (0.0, 0.0),
+            (self.size.x, 0.0),
+            (0.0, self.size.y),
+            (self.size.x, self.size.y),
+        ];
+
+        for (index, p) in collision_points.iter().enumerate() {
+            let map_pos = (self.pos + self.direction + vec2(p.0, p.1)) / (16.0 * MAP_SCALE_FACTOR);
+            let pottential_collider =
+                &map.tiles[map_pos.y as usize * map.width as usize + map_pos.x as usize];
+            if pottential_collider.collision && !is_key_down(KeyCode::Space) {
+                println!("collid with {:?}, with:{index}", pottential_collider);
+                let x0 = map_pos.x.floor() * 16.0 * MAP_SCALE_FACTOR - p.0;
+                let x1 = (map_pos.x.floor() + 1.0) * MAP_SCALE_FACTOR * 16.0 - p.0;
+                let y0 = map_pos.y.floor() * 16.0 * MAP_SCALE_FACTOR - p.1;
+                let y1 = map_pos.y.ceil() * MAP_SCALE_FACTOR * 16.0 - p.1;
+                self.pos.x = self.pos.x.clamp(x0, x1);
+                self.pos.y = self.pos.y.clamp(y0, y1);
+                if self.pos.x == x0 || self.pos.x == x1 {
+                    // self.direction.y = self.direction.y.atan2(self.direction.x);
+                    self.direction.x = 0.0;
+                } else if self.pos.y == y0 || self.pos.y == y1 {
+                    // self.direction.x = self.direction.x.atan2(self.direction.y);
+                    self.direction.y = 0.0;
+                }
+                break;
+            }
+        }
+        draw_rectangle(self.pos.x, self.pos.y, self.size.x, self.size.y, WHITE);
+
         self.pos += self.direction;
+
+        self.direction = self.direction.lerp(Vec2::ZERO, 0.3);
+        if self.direction.x.abs() < 0.3 && self.direction.y.abs() < 0.3 {
+            self.direction = Vec2::ZERO;
+        }
+        if is_key_down(KeyCode::F) {
+            dbg!(self.pos, self.direction);
+        }
         let mut time = (get_time() * 1000.0) % animation.1 as f64;
         for i in &animation.0 {
             if time <= i.1 as f64 {
@@ -134,8 +182,7 @@ impl Player {
                     self.pos.y,
                     WHITE,
                     DrawTextureParams {
-                        flip_x: flipped.0,
-                        flip_y: flipped.1,
+                        rotation,
                         ..Default::default()
                     },
                 );
@@ -229,7 +276,7 @@ fn load_tilemap(tilemap: &str, tileset: &str) -> (Vec<Tile>, u32) {
 
         (lowest_x, lowest_y, highest_x, highest_y)
     }
-    let mut layers: Vec<Vec<Chunk>> = Vec::new();
+    let mut layers: Vec<(Vec<Chunk>, &str)> = Vec::new();
     for layer in tilemap.split("<layer").skip(1) {
         let name = layer
             .split_once("name=\"")
@@ -287,9 +334,9 @@ fn load_tilemap(tilemap: &str, tileset: &str) -> (Vec<Tile>, u32) {
 
             chunks.push(Chunk { x, y, data });
         }
-        layers.push(chunks);
+        layers.push((chunks, name));
     }
-    let layers_pos: Vec<(i32, i32, i32, i32)> = layers.iter().map(|f| get_area(f)).collect();
+    let layers_pos: Vec<(i32, i32, i32, i32)> = layers.iter().map(|f| get_area(&f.0)).collect();
     dbg!(&layers_pos);
     let area: (i32, i32, i32, i32) = (
         layers_pos.iter().map(|f| f.0).min().unwrap(),
@@ -300,42 +347,34 @@ fn load_tilemap(tilemap: &str, tileset: &str) -> (Vec<Tile>, u32) {
     dbg!(area);
     let mut tiles: Vec<Tile> = Vec::with_capacity(((area.2 - area.0) * (area.3 - area.1)) as usize);
 
-    for y in area.1..area.3 {
-        for x in area.0..area.2 {
+    for y in area.1..area.3 + 1 {
+        for x in area.0..area.2 + 1 {
             let mut tile = Tile {
                 textures: vec![(2, 0)],
-                collision: true,
+                collision: false,
             };
-            for (index, layer) in layers.iter().enumerate() {
-                let layer_pos = layers_pos[index];
-                if x >= layer_pos.0 && layer_pos.2 > x && layer_pos.1 <= y && y < layer_pos.3 {
-                    let chunk = layer
-                        .iter()
-                        .find(|f| {
-                            f.x == ((x as f32 / 16.0).floor() * 16.0) as i32
-                                && f.y == ((y as f32 / 16.0).floor() * 16.0) as i32
-                        })
-                        .unwrap();
-
+            for (chunks, name) in layers.iter() {
+                if let Some(chunk) = chunks.iter().find(|f| {
+                    f.x == ((x as f32 / 16.0).floor() * 16.0) as i32
+                        && f.y == ((y as f32 / 16.0).floor() * 16.0) as i32
+                }) {
                     // dbg!(chunk.x, chunk.y, x, y);
                     let id = chunk.data[((y - chunk.y) * 16 + (x - chunk.x) % 16) as usize];
                     // dbg!(id);
                     if id != 0 {
                         let id = id - 1;
+                        if name.contains("collision") {
+                            tile.collision = true;
+                        }
                         tile.textures
                             .push((id % tile_set_width, id / tile_set_width));
                     }
-                } else {
-                    println!(
-                        "it seems there isnt a chunk at x:{} y:{} but i think there should be",
-                        x, y
-                    );
                 }
             }
             tiles.push(tile);
         }
     }
-    (tiles, (area.2 - area.0) as u32)
+    (tiles, (area.2 + 1 - area.0) as u32)
 }
 struct Map {
     tiles: Vec<Tile>,
@@ -357,10 +396,11 @@ impl Map {
             for text in &tile.textures {
                 SPRITESHEET.draw_from(
                     vec2(
-                        (index as u32 % self.width) as f32 * 16.0,
-                        (index as u32 / self.width) as f32 * 16.0,
+                        (index as u32 % self.width) as f32 * 16.0 * MAP_SCALE_FACTOR,
+                        (index as u32 / self.width) as f32 * 16.0 * MAP_SCALE_FACTOR,
                     ),
                     *text,
+                    MAP_SCALE_FACTOR,
                 );
             }
         }
@@ -371,6 +411,7 @@ static SPRITESHEET: LazyLock<Spritesheet> = std::sync::LazyLock::new(|| Spritesh
     widht: 16.0,
     height: 16.0,
 });
+const MAP_SCALE_FACTOR: f32 = 3.0;
 struct Game {
     cat: Player,
     entities: Vec<Entity>,
@@ -405,23 +446,9 @@ impl Game {
         clear_background(BLACK);
     }
     async fn update(&mut self) {
-        #[cfg(debug_assertions)]
-        {
-            if is_key_down(KeyCode::Left) {
-                self.camera.target.x -= 4.0;
-            }
-            if is_key_down(KeyCode::Right) {
-                self.camera.target.x += 4.0;
-            }
-            if is_key_down(KeyCode::Down) {
-                self.camera.target.y += 4.0;
-            }
-            if is_key_down(KeyCode::Up) {
-                self.camera.target.y -= 4.0;
-            }
-        }
-        self.cat.update();
         self.map.draw_map();
+        self.cat.update(&self.map);
+        self.camera.target = self.cat.pos;
         self.draw_camera();
     }
 }
