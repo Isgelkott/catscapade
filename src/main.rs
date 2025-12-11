@@ -2,7 +2,7 @@ use std::{f32::consts::PI, sync::LazyLock};
 
 use asefile::AsepriteFile;
 use image::*;
-use macroquad::prelude::*;
+use macroquad::{prelude::*, rand::rand};
 fn load_ase_texture(bytes: &[u8], layer: Option<u32>, frame: Option<u32>) -> Texture2D {
     let img = AsepriteFile::read(bytes).unwrap();
     let frame = frame.unwrap_or(0);
@@ -86,13 +86,13 @@ struct PlayerAnimations {
 }
 const CAT_SPEED: f32 = 70.0;
 const FRICTION: f32 = 0.2;
-struct Player {
+struct Cat {
     pos: Vec2,
     size: Vec2,
     direction: Vec2,
     animations: PlayerAnimations,
 }
-impl Player {
+impl Cat {
     fn new() -> Self {
         let animations = PlayerAnimations {
             walk: load_animation_from_tag(include_bytes!("../assets/cat.ase"), "walk"),
@@ -144,6 +144,7 @@ impl Player {
             let map_pos = (self.pos + self.direction + vec2(p.0, p.1)) / (16.0 * MAP_SCALE_FACTOR);
             let pottential_collider =
                 &map.tiles[map_pos.y as usize * map.width as usize + map_pos.x as usize];
+
             if pottential_collider.collision && !is_key_down(KeyCode::Space) {
                 println!("collid with {:?}, with:{index}", pottential_collider);
                 let x0 = map_pos.x.floor() * 16.0 * MAP_SCALE_FACTOR - p.0;
@@ -162,7 +163,7 @@ impl Player {
                 break;
             }
         }
-        draw_rectangle(self.pos.x, self.pos.y, self.size.x, self.size.y, WHITE);
+        // draw_rectangle(self.pos.x, self.pos.y, self.size.x, self.size.y, WHITE);
 
         self.pos += self.direction;
 
@@ -193,13 +194,33 @@ impl Player {
         }
     }
 }
-struct Entity {
+struct Mouse<'a> {
     pos: Vec2,
+    direction: Vec2,
+    animation: &'a Animation,
 }
 const SCREEN_SIZE: Vec2 = Vec2 { x: 160.0, y: 160.0 };
+#[derive(Debug, PartialEq)]
+
+enum Layer {
+    Floor,
+    Decor,
+    Collision,
+}
+impl Layer {
+    fn from_str(string: &str) -> Self {
+        match string {
+            "floor" => Self::Floor,
+            "decor" => Self::Decor,
+            "collision" => Self::Collision,
+            _ => unreachable!(),
+        }
+    }
+}
 #[derive(Debug)]
 struct Tile {
     textures: Vec<(u8, u8)>,
+    layers: Vec<Layer>,
     collision: bool,
 }
 fn load_tilemap(tilemap: &str, tileset: &str) -> (Vec<Tile>, u32) {
@@ -350,8 +371,9 @@ fn load_tilemap(tilemap: &str, tileset: &str) -> (Vec<Tile>, u32) {
     for y in area.1..area.3 + 1 {
         for x in area.0..area.2 + 1 {
             let mut tile = Tile {
-                textures: vec![(2, 0)],
+                textures: vec![],
                 collision: false,
+                layers: Vec::new(),
             };
             for (chunks, name) in layers.iter() {
                 if let Some(chunk) = chunks.iter().find(|f| {
@@ -368,6 +390,8 @@ fn load_tilemap(tilemap: &str, tileset: &str) -> (Vec<Tile>, u32) {
                         }
                         tile.textures
                             .push((id % tile_set_width, id / tile_set_width));
+                        dbg!(name);
+                        tile.layers.push(Layer::from_str(&name));
                     }
                 }
             }
@@ -411,20 +435,93 @@ static SPRITESHEET: LazyLock<Spritesheet> = std::sync::LazyLock::new(|| Spritesh
     widht: 16.0,
     height: 16.0,
 });
+static MOUSE_ANIMATION: LazyLock<Animation> = std::sync::LazyLock::new(|| {
+    load_animation_from_tag(include_bytes!("../assets/mouse.ase"), "walk")
+});
 const MAP_SCALE_FACTOR: f32 = 3.0;
-struct Game {
-    cat: Player,
-    entities: Vec<Entity>,
+struct Spawner {
+    clock: f32,
+}
+impl Spawner {
+    fn new() -> Self {
+        Self { clock: 0.0 }
+    }
+    fn spawn_wave(entities: &mut Vec<Mouse>, map: &Map) {
+        println!("spawnin");
+        let wave_size = 30;
+        let mut dealt_with = Vec::with_capacity(30);
+        while dealt_with.len() < wave_size {
+            let rand = rand::gen_range(0, map.tiles.len());
+            if dealt_with.contains(&rand) {
+                continue;
+            }
+            let tile = &map.tiles[rand];
+            if tile.layers.len() == 1 && tile.layers[0] == Layer::Floor {
+                dealt_with.push(rand);
+                entities.push(Mouse {
+                    pos: vec2(
+                        (rand as u32 % map.width) as f32 * 16.0 * MAP_SCALE_FACTOR,
+                        (rand as u32 / map.width) as f32 * 16.0 * MAP_SCALE_FACTOR,
+                    ),
+                    direction: Vec2::ZERO,
+                    animation: &MOUSE_ANIMATION,
+                });
+            }
+        }
+    }
+    fn update(&mut self, entities: &mut Vec<Mouse>, map: &Map) {
+        self.clock -= get_frame_time();
+        if self.clock <= 0.0 {
+            self.clock = 10.0;
+            Spawner::spawn_wave(entities, map)
+        }
+    }
+}
+#[derive(PartialEq)]
+enum State {
+    Menu,
+    Game,
+}
+struct Game<'a> {
+    state: State,
+    cat: Cat,
+    mice: Vec<Mouse<'a>>,
     camera: Camera2D,
     map: Map,
+    spawner: Spawner,
 }
-impl Game {
+impl<'a> Game<'a> {
     fn new() -> Self {
         Self {
+            state: State::Menu,
+            spawner: Spawner::new(),
             map: Map::new(),
-            cat: Player::new(),
-            entities: Vec::new(),
+            cat: Cat::new(),
+            mice: Vec::new(),
             camera: create_camera(SCREEN_SIZE),
+        }
+    }
+    fn draw_mice(&self) {
+        for mouse in self.mice.iter() {
+            let mut time = (get_time() * 1000.0) % mouse.animation.1 as f64;
+            for i in &mouse.animation.0 {
+                if time <= i.1 as f64 {
+                    draw_texture_ex(
+                        &i.0,
+                        mouse.pos.x,
+                        mouse.pos.y,
+                        WHITE,
+                        DrawTextureParams {
+                            rotation: mouse.direction.y.atan2(mouse.direction.x),
+
+                            ..Default::default()
+                        },
+                    );
+                    break;
+                } else {
+                    time -= i.1 as f64;
+                }
+            }
         }
     }
     fn draw_camera(&self) {
@@ -445,18 +542,72 @@ impl Game {
         set_camera(&self.camera);
         clear_background(BLACK);
     }
+    fn handle_menu(&self) {}
     async fn update(&mut self) {
-        self.map.draw_map();
-        self.cat.update(&self.map);
-        self.camera.target = self.cat.pos;
-        self.draw_camera();
+        if self.state == State::Menu {
+            self.handle_menu();
+        } else {
+            self.map.draw_map();
+            self.draw_mice();
+            self.cat.update(&self.map);
+            self.spawner.update(&mut self.mice, &self.map);
+            self.camera.target = self.cat.pos;
+            self.draw_camera();
+        }
+    }
+}
+struct Button {
+    rect: Rect,
+    default: Texture2D,
+    hover: Texture2D,
+}
+impl Button {
+    fn is_clicked(&self, mouse_pos: (f32, f32)) -> bool {
+        mouse_pos.0 >= self.rect.x
+            && mouse_pos.0 <= self.rect.x + self.rect.w
+            && mouse_pos.1 <= self.rect.h + self.rect.y
+            && mouse_pos.1 >= self.rect.y
+            && is_mouse_button_down(MouseButton::Left)
+    }
+}
+struct Menu {
+    camera: Camera2D,
+    buttons: Vec<Button>,
+}
+impl Menu {
+    fn new(size: (u32, u32)) -> Self {
+        let default = load_ase_texture(include_bytes!("../assets/play.ase"), None, None);
+        Self {
+            buttons: vec![],
+            camera: create_camera(vec2(800.0, 800.0)),
+        }
+    }
+    fn update(&self) {}
+}
+struct GameManager<'a> {
+    menu: Menu,
+    game: Game<'a>,
+    state: State,
+}
+impl<'a> GameManager<'a> {
+    fn new() -> Self {
+        Self {
+            game: Game::new(),
+            menu: Menu::new(),
+        }
+    }
+    fn update(&mut self) {
+        match self.state {
+            State::Game => self.game.update(),
+            State::Menu => self.menu.update(),
+        }
     }
 }
 #[macroquad::main("catscapade")]
 async fn main() {
-    let mut game = Game::new();
+    let mut game = GameManager::new();
     loop {
-        game.update().await;
+        game.update();
         next_frame().await;
     }
 }
