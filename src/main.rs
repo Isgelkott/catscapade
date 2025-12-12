@@ -28,7 +28,7 @@ fn create_camera(dimensions: Vec2) -> Camera2D {
     Camera2D {
         render_target: Some(rt),
         zoom: Vec2::new(1.0 / dimensions.x * 2.0, 1.0 / dimensions.y * 2.0),
-        target: vec2(dimensions.x / 2.0, dimensions.y / 2.0),
+        target: vec2((dimensions.x / 2.0).floor(), (dimensions.y / 2.0).floor()),
         ..Default::default()
     }
 }
@@ -85,7 +85,6 @@ struct PlayerAnimations {
     walk: Animation,
 }
 const CAT_SPEED: f32 = 70.0;
-const FRICTION: f32 = 0.2;
 struct Cat {
     pos: Vec2,
     size: Vec2,
@@ -99,7 +98,7 @@ impl Cat {
         };
 
         Self {
-            pos: Vec2::ZERO,
+            pos: vec2(100.0, 200.0),
             size: vec2(
                 animations.walk.0[0].0.width(),
                 animations.walk.0[0].0.height(),
@@ -110,28 +109,24 @@ impl Cat {
     }
     fn update(&mut self, map: &Map) {
         let mut animation = &self.animations.walk;
-        let mut rotation = 0.0;
         let mut direction = Vec2::ZERO;
         if is_key_down(KeyCode::A) {
             direction.x += -1.0;
             animation = &self.animations.walk;
-            rotation = PI * 1.5;
         }
         if is_key_down(KeyCode::D) {
             direction.x += 1.0;
             animation = &self.animations.walk;
-            rotation = PI / 2.0;
         }
         if is_key_down(KeyCode::S) {
             direction.y += 1.0;
             animation = &self.animations.walk;
-            rotation = PI;
         }
         if is_key_down(KeyCode::W) {
             direction.y += -1.0;
             animation = &self.animations.walk;
         }
-
+        let rotation = 0.5 * PI + direction.y.atan2(direction.x);
         self.direction += direction.normalize_or_zero() * CAT_SPEED * get_frame_time();
         let collision_points = [
             (0.0, 0.0),
@@ -154,16 +149,13 @@ impl Cat {
                 self.pos.x = self.pos.x.clamp(x0, x1);
                 self.pos.y = self.pos.y.clamp(y0, y1);
                 if self.pos.x == x0 || self.pos.x == x1 {
-                    // self.direction.y = self.direction.y.atan2(self.direction.x);
                     self.direction.x = 0.0;
                 } else if self.pos.y == y0 || self.pos.y == y1 {
-                    // self.direction.x = self.direction.x.atan2(self.direction.y);
                     self.direction.y = 0.0;
                 }
                 break;
             }
         }
-        // draw_rectangle(self.pos.x, self.pos.y, self.size.x, self.size.y, WHITE);
 
         self.pos += self.direction;
 
@@ -195,7 +187,11 @@ impl Cat {
     }
 }
 struct Mouse<'a> {
+    is_rainbow: bool,
+    speed: f32,
+    scare_clock: f32,
     pos: Vec2,
+    size: Vec2,
     direction: Vec2,
     animation: &'a Animation,
 }
@@ -380,9 +376,8 @@ fn load_tilemap(tilemap: &str, tileset: &str) -> (Vec<Tile>, u32) {
                     f.x == ((x as f32 / 16.0).floor() * 16.0) as i32
                         && f.y == ((y as f32 / 16.0).floor() * 16.0) as i32
                 }) {
-                    // dbg!(chunk.x, chunk.y, x, y);
                     let id = chunk.data[((y - chunk.y) * 16 + (x - chunk.x) % 16) as usize];
-                    // dbg!(id);
+
                     if id != 0 {
                         let id = id - 1;
                         if name.contains("collision") {
@@ -458,7 +453,20 @@ impl Spawner {
             let tile = &map.tiles[rand];
             if tile.layers.len() == 1 && tile.layers[0] == Layer::Floor {
                 dealt_with.push(rand);
+                let size = vec2(
+                    MOUSE_ANIMATION.0[0].0.width(),
+                    MOUSE_ANIMATION.0[0].0.height(),
+                );
+                let rainbow = if rand::gen_range(0, 50) == 0 {
+                    true
+                } else {
+                    false
+                };
                 entities.push(Mouse {
+                    speed: if rainbow { 5.0 } else { 2.0 },
+                    is_rainbow: rainbow,
+                    scare_clock: 0.0,
+                    size,
                     pos: vec2(
                         (rand as u32 % map.width) as f32 * 16.0 * MAP_SCALE_FACTOR,
                         (rand as u32 / map.width) as f32 * 16.0 * MAP_SCALE_FACTOR,
@@ -482,6 +490,46 @@ enum State {
     Menu,
     Game,
 }
+const DEFAULT_FRAGMENT_SHADER: &'static str = "#version 100
+precision lowp float;
+
+varying vec2 uv;
+
+uniform sampler2D Texture;
+
+void main() {
+    gl_FragColor = vec4(uv.xy,0.0,1.0);
+}
+";
+
+const DEFAULT_VERTEX_SHADER: &'static str = "#version 100
+precision lowp float;
+
+attribute vec3 position;
+attribute vec2 texcoord;
+
+varying vec2 uv;
+
+uniform mat4 Model;
+uniform mat4 Projection;
+
+void main() {
+    gl_Position = Projection * Model * vec4(position, 1);
+    uv = texcoord;
+}
+";
+static RAINBOW_SHADER: LazyLock<Material> = std::sync::LazyLock::new(|| {
+    load_material(
+        ShaderSource::Glsl {
+            vertex: DEFAULT_VERTEX_SHADER,
+            fragment: DEFAULT_FRAGMENT_SHADER,
+        },
+        MaterialParams {
+            ..Default::default()
+        },
+    )
+    .unwrap()
+});
 struct Game<'a> {
     state: State,
     cat: Cat,
@@ -503,6 +551,7 @@ impl<'a> Game<'a> {
     }
     fn draw_mice(&self) {
         for mouse in self.mice.iter() {
+            gl_use_material(&RAINBOW_SHADER);
             let mut time = (get_time() * 1000.0) % mouse.animation.1 as f64;
             for i in &mouse.animation.0 {
                 if time <= i.1 as f64 {
@@ -512,7 +561,7 @@ impl<'a> Game<'a> {
                         mouse.pos.y,
                         WHITE,
                         DrawTextureParams {
-                            rotation: mouse.direction.y.atan2(mouse.direction.x),
+                            rotation: mouse.direction.y.atan2(mouse.direction.x) + PI / 2.0,
 
                             ..Default::default()
                         },
@@ -522,6 +571,8 @@ impl<'a> Game<'a> {
                     time -= i.1 as f64;
                 }
             }
+
+            gl_use_default_material();
         }
     }
     fn draw_camera(&self) {
@@ -542,24 +593,75 @@ impl<'a> Game<'a> {
         set_camera(&self.camera);
         clear_background(BLACK);
     }
-    fn handle_menu(&self) {}
-    async fn update(&mut self) {
-        if self.state == State::Menu {
-            self.handle_menu();
-        } else {
-            self.map.draw_map();
-            self.draw_mice();
-            self.cat.update(&self.map);
-            self.spawner.update(&mut self.mice, &self.map);
-            self.camera.target = self.cat.pos;
-            self.draw_camera();
+    fn mouse_eatery(&mut self) {
+        self.mice.retain(|f| {
+            let collisions = [
+                (0.0, 0.0),
+                (f.size.x, 0.0),
+                (0.0, f.size.y),
+                (f.size.x, f.size.y),
+            ];
+            let mut collide = false;
+            for p in collisions {
+                if p.0 + f.pos.x >= self.cat.pos.x
+                    && p.0 + f.pos.x <= self.cat.pos.x + self.cat.size.x
+                    && f.pos.y + p.1 <= self.cat.pos.y + self.cat.size.y
+                    && f.pos.y + p.1 > self.cat.pos.y
+                {
+                    collide = true;
+                }
+            }
+            !collide
+        })
+    }
+    fn mouse_behaviour(&mut self) {
+        for mouse in self.mice.iter_mut() {
+            let collisions = [
+                (0.0, 0.0),
+                (mouse.size.x, 0.0),
+                (0.0, mouse.size.y),
+                (mouse.size.x, mouse.size.y),
+            ];
+
+            for p in collisions {
+                let map_pos =
+                    (mouse.pos + mouse.direction + vec2(p.0, p.1)) / (16.0 * MAP_SCALE_FACTOR);
+                if map_pos.y as u32 >= self.map.tiles.len() as u32 / self.map.width - 2 {
+                    break;
+                }
+
+                let pottential_collider = &self.map.tiles
+                    [map_pos.y as usize * self.map.width as usize + map_pos.x as usize];
+
+                if pottential_collider.collision {
+                    mouse.direction *= -1.0;
+                    break;
+                }
+            }
+            if mouse.scare_clock <= 0.0 {
+                mouse.direction = (mouse.pos - self.cat.pos).normalize();
+                mouse.scare_clock = 3.0;
+            } else {
+                mouse.scare_clock -= get_frame_time();
+            }
+
+            mouse.pos += mouse.direction * mouse.speed;
         }
+    }
+    async fn update(&mut self) {
+        self.map.draw_map();
+        self.draw_mice();
+        self.mouse_eatery();
+        self.mouse_behaviour();
+        self.cat.update(&self.map);
+        self.spawner.update(&mut self.mice, &self.map);
+        self.camera.target = self.cat.pos;
+        self.draw_camera();
     }
 }
 struct Button {
     rect: Rect,
-    default: Texture2D,
-    hover: Texture2D,
+    texture: Texture2D,
 }
 impl Button {
     fn is_clicked(&self, mouse_pos: (f32, f32)) -> bool {
@@ -571,18 +673,124 @@ impl Button {
     }
 }
 struct Menu {
-    camera: Camera2D,
-    buttons: Vec<Button>,
+    size: (f32, f32),
+    button: Button,
+    background: Texture2D,
+    cat: Vec<Animation>,
+    timer: f32,
+    animation_clock: f32,
+    current_animation: Option<usize>,
+    play: bool,
 }
+
 impl Menu {
-    fn new(size: (u32, u32)) -> Self {
-        let default = load_ase_texture(include_bytes!("../assets/play.ase"), None, None);
+    fn new() -> Self {
+        let play = load_ase_texture(include_bytes!("../assets/play.ase"), None, None);
+        let bsize = 0.2 * vec2(play.width(), play.height());
+        let background = load_ase_texture(include_bytes!("../assets/background.ase"), None, None);
+        dbg!(background.width());
+        let size = (background.width(), background.height());
         Self {
-            buttons: vec![],
-            camera: create_camera(vec2(800.0, 800.0)),
+            animation_clock: 0.0,
+            current_animation: None,
+            play: false,
+            timer: 0.0,
+            cat: vec![
+                load_animation_from_tag(include_bytes!("../assets/main_menu_cat.ase"), "still"),
+                load_animation_from_tag(include_bytes!("../assets/main_menu_cat.ase"), "lick"),
+                load_animation_from_tag(include_bytes!("../assets/main_menu_cat.ase"), "scratch"),
+            ],
+            background,
+            button: Button {
+                texture: play,
+                rect: Rect {
+                    x: 20.0,
+                    y: 80.0,
+                    w: bsize.x,
+                    h: bsize.y,
+                },
+            },
+            size,
         }
     }
-    fn update(&self) {}
+    async fn update(&mut self) {
+        let sf = (screen_width() / self.size.0).min(screen_height() / self.size.1);
+
+        draw_texture_ex(
+            &self.background,
+            0.0,
+            0.00,
+            WHITE,
+            DrawTextureParams {
+                dest_size: Some(vec2(
+                    self.background.width() * sf,
+                    self.background.height() * sf,
+                )),
+                ..Default::default()
+            },
+        );
+        draw_texture_ex(
+            &self.button.texture,
+            self.button.rect.x,
+            self.button.rect.y,
+            WHITE,
+            DrawTextureParams {
+                ..Default::default()
+            },
+        );
+        if let Some(animation) = self.current_animation {
+            let animation = &self.cat[animation];
+            let clock = (self.animation_clock * 1000.0) as u32;
+            if clock < animation.1 {
+                let mut frame = clock;
+                for i in animation.0.iter() {
+                    if frame > i.1 {
+                        frame -= i.1
+                    } else {
+                        draw_texture_ex(
+                            &i.0,
+                            140.0 * sf,
+                            70.0 * sf,
+                            WHITE,
+                            DrawTextureParams {
+                                dest_size: Some(vec2(i.0.width() * sf, i.0.height() * sf)),
+                                ..Default::default()
+                            },
+                        );
+                        break;
+                    }
+                }
+                self.animation_clock += get_frame_time();
+            } else {
+                self.current_animation = None;
+                self.animation_clock = 0.0;
+            }
+        } else {
+            let text = &self.cat[0].0[0].0;
+            draw_texture_ex(
+                text,
+                140.0 * sf,
+                70.0 * sf,
+                WHITE,
+                DrawTextureParams {
+                    dest_size: Some(vec2(text.width() * sf, text.height() * sf)),
+
+                    ..Default::default()
+                },
+            );
+        }
+        if self.timer <= 0.0 {
+            self.timer = 7.0;
+            self.current_animation = Some(rand::gen_range(1, self.cat.len()));
+        } else {
+            self.timer -= get_frame_time();
+        }
+        let mouse_pos = mouse_position();
+        let mouse_pos = (mouse_pos.0 / sf, mouse_pos.1 / sf);
+        if self.button.is_clicked(mouse_pos) {
+            self.play = true;
+        }
+    }
 }
 struct GameManager<'a> {
     menu: Menu,
@@ -592,14 +800,21 @@ struct GameManager<'a> {
 impl<'a> GameManager<'a> {
     fn new() -> Self {
         Self {
+            state: State::Menu,
             game: Game::new(),
             menu: Menu::new(),
         }
     }
-    fn update(&mut self) {
+    async fn update(&mut self) {
         match self.state {
-            State::Game => self.game.update(),
-            State::Menu => self.menu.update(),
+            State::Game => self.game.update().await,
+            State::Menu => {
+                if self.menu.play {
+                    self.state = State::Game
+                } else {
+                    self.menu.update().await
+                }
+            }
         }
     }
 }
@@ -607,7 +822,7 @@ impl<'a> GameManager<'a> {
 async fn main() {
     let mut game = GameManager::new();
     loop {
-        game.update();
+        game.update().await;
         next_frame().await;
     }
 }
