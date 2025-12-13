@@ -1,8 +1,11 @@
-use std::{f32::consts::PI, sync::LazyLock};
-
 use asefile::AsepriteFile;
 use image::*;
+use macroquad::{
+    miniquad::{BlendFactor, BlendState, BlendValue, Equation},
+    prelude::*,
+};
 use macroquad::{prelude::*, rand::rand};
+use std::{collections::HashMap, f32::consts::PI, sync::LazyLock, vec};
 fn load_ase_texture(bytes: &[u8], layer: Option<u32>, frame: Option<u32>) -> Texture2D {
     let img = AsepriteFile::read(bytes).unwrap();
     let frame = frame.unwrap_or(0);
@@ -90,6 +93,7 @@ struct Cat {
     size: Vec2,
     direction: Vec2,
     animations: PlayerAnimations,
+    last_rotation: f32,
 }
 impl Cat {
     fn new() -> Self {
@@ -98,6 +102,7 @@ impl Cat {
         };
 
         Self {
+            last_rotation: 0.0,
             pos: vec2(100.0, 200.0),
             size: vec2(
                 animations.walk.0[0].0.width(),
@@ -126,13 +131,22 @@ impl Cat {
             direction.y += -1.0;
             animation = &self.animations.walk;
         }
-        let rotation = 0.5 * PI + direction.y.atan2(direction.x);
+        let rotation = if direction == Vec2::ZERO {
+            self.last_rotation
+        } else {
+            0.5 * PI + direction.y.atan2(direction.x)
+        };
+        self.last_rotation = rotation;
         self.direction += direction.normalize_or_zero() * CAT_SPEED * get_frame_time();
+        let shrunk_collision = 4.0;
         let collision_points = [
-            (0.0, 0.0),
-            (self.size.x, 0.0),
-            (0.0, self.size.y),
-            (self.size.x, self.size.y),
+            (shrunk_collision, shrunk_collision),
+            (self.size.x - shrunk_collision, shrunk_collision),
+            (shrunk_collision, self.size.y - shrunk_collision),
+            (
+                self.size.x - shrunk_collision,
+                self.size.y - shrunk_collision,
+            ),
         ];
 
         for (index, p) in collision_points.iter().enumerate() {
@@ -141,11 +155,19 @@ impl Cat {
                 &map.tiles[map_pos.y as usize * map.width as usize + map_pos.x as usize];
 
             if pottential_collider.collision && !is_key_down(KeyCode::Space) {
-                println!("collid with {:?}, with:{index}", pottential_collider);
+                println!(
+                    "collid with {:?}, with:{index} cat pos is {:?}, map_pos:{:?}",
+                    pottential_collider,
+                    (self.pos + self.direction),
+                    map_pos
+                );
+
                 let x0 = map_pos.x.floor() * 16.0 * MAP_SCALE_FACTOR - p.0;
                 let x1 = (map_pos.x.floor() + 1.0) * MAP_SCALE_FACTOR * 16.0 - p.0;
                 let y0 = map_pos.y.floor() * 16.0 * MAP_SCALE_FACTOR - p.1;
                 let y1 = map_pos.y.ceil() * MAP_SCALE_FACTOR * 16.0 - p.1;
+
+                dbg!(y1);
                 self.pos.x = self.pos.x.clamp(x0, x1);
                 self.pos.y = self.pos.y.clamp(y0, y1);
                 if self.pos.x == x0 || self.pos.x == x1 {
@@ -153,10 +175,10 @@ impl Cat {
                 } else if self.pos.y == y0 || self.pos.y == y1 {
                     self.direction.y = 0.0;
                 }
-                break;
+                // break;
             }
         }
-
+        // draw_rectangle(self.pos.x, self.pos.y, self.size.x, self.size.y, WHITE);
         self.pos += self.direction;
 
         self.direction = self.direction.lerp(Vec2::ZERO, 0.3);
@@ -187,9 +209,9 @@ impl Cat {
     }
 }
 struct Mouse<'a> {
+    collision_cooldown: f32,
     is_rainbow: bool,
     speed: f32,
-    scare_clock: f32,
     pos: Vec2,
     size: Vec2,
     direction: Vec2,
@@ -230,52 +252,36 @@ fn load_tilemap(tilemap: &str, tileset: &str) -> (Vec<Tile>, u32) {
         .parse::<u8>()
         .unwrap();
     dbg!(tile_set_width);
-    #[derive(Debug)]
-    struct Chunk {
-        x: i32,
-        y: i32,
-        data: [u8; 256],
-    }
-
-    fn get_area(chunks: &Vec<Chunk>) -> (i32, i32, i32, i32) {
-        let chunks: Vec<&Chunk> = chunks
-            .iter()
-            .filter(|f| !f.data.iter().all(|f| *f == 0))
-            .collect();
-        dbg!(&chunks);
+    fn get_area(chunks: &HashMap<(i32, i32), [u8; 256]>) -> (i32, i32, i32, i32) {
         let posses: Vec<(i32, i32, i32, i32)> = chunks
             .iter()
             .map(|f| {
-                let lowest_x = f.x
-                    + f.data
+                let lowest_x = f.0.0
+                    + f.1
                         .iter()
                         .enumerate()
                         .filter(|f| *f.1 != 0)
                         .map(|f| f.0 % 16)
                         .min()
                         .unwrap() as i32;
-                let highest_x = f.x
-                    + f.data
+                let highest_x = f.0.0
+                    + f.1
                         .iter()
                         .enumerate()
                         .filter(|f| *f.1 != 0)
-                        .map(|f| {
-                            dbg!(f, f.0 % 16);
-                            f.0 % 16
-                        })
+                        .map(|f| f.0 % 16)
                         .max()
                         .unwrap() as i32;
-                dbg!(highest_x);
-                let lowest_y = f.y
-                    + f.data
+                let lowest_y = f.0.1
+                    + f.1
                         .iter()
                         .enumerate()
                         .filter(|f| *f.1 != 0)
                         .map(|f| f.0 / 16)
                         .min()
                         .unwrap() as i32;
-                let highest_y = f.y
-                    + f.data
+                let highest_y = f.0.1
+                    + f.1
                         .iter()
                         .enumerate()
                         .filter(|f| *f.1 != 0)
@@ -293,7 +299,7 @@ fn load_tilemap(tilemap: &str, tileset: &str) -> (Vec<Tile>, u32) {
 
         (lowest_x, lowest_y, highest_x, highest_y)
     }
-    let mut layers: Vec<(Vec<Chunk>, &str)> = Vec::new();
+    let mut layers: Vec<(HashMap<(i32, i32), [u8; 256]>, &str)> = Vec::new();
     for layer in tilemap.split("<layer").skip(1) {
         let name = layer
             .split_once("name=\"")
@@ -303,7 +309,7 @@ fn load_tilemap(tilemap: &str, tileset: &str) -> (Vec<Tile>, u32) {
             .unwrap()
             .0;
         dbg!(name);
-        let mut chunks: Vec<Chunk> = Vec::new();
+        let mut chunks: HashMap<(i32, i32), [u8; 256]> = HashMap::new();
         for chunk in layer.split("<chunk").skip(1) {
             let x = chunk
                 .split_once("x=\"")
@@ -349,7 +355,7 @@ fn load_tilemap(tilemap: &str, tileset: &str) -> (Vec<Tile>, u32) {
                 println!("chunk is full of juice x: {}y:{}", x, y)
             }
 
-            chunks.push(Chunk { x, y, data });
+            chunks.insert((x, y), data);
         }
         layers.push((chunks, name));
     }
@@ -372,11 +378,11 @@ fn load_tilemap(tilemap: &str, tileset: &str) -> (Vec<Tile>, u32) {
                 layers: Vec::new(),
             };
             for (chunks, name) in layers.iter() {
-                if let Some(chunk) = chunks.iter().find(|f| {
-                    f.x == ((x as f32 / 16.0).floor() * 16.0) as i32
-                        && f.y == ((y as f32 / 16.0).floor() * 16.0) as i32
-                }) {
-                    let id = chunk.data[((y - chunk.y) * 16 + (x - chunk.x) % 16) as usize];
+                if let Some(chunk) = chunks.get(&(
+                    ((x as f32 / 16.0).floor() * 16.0) as i32,
+                    ((y as f32 / 16.0).floor() * 16.0) as i32,
+                )) {
+                    let id = chunk[(y % 16 * 16 + x % 16) as usize];
 
                     if id != 0 {
                         let id = id - 1;
@@ -385,7 +391,6 @@ fn load_tilemap(tilemap: &str, tileset: &str) -> (Vec<Tile>, u32) {
                         }
                         tile.textures
                             .push((id % tile_set_width, id / tile_set_width));
-                        dbg!(name);
                         tile.layers.push(Layer::from_str(&name));
                     }
                 }
@@ -463,9 +468,9 @@ impl Spawner {
                     false
                 };
                 entities.push(Mouse {
-                    speed: if rainbow { 5.0 } else { 2.0 },
+                    collision_cooldown: 0.0,
+                    speed: if rainbow { 0.5 } else { 1.0 },
                     is_rainbow: rainbow,
-                    scare_clock: 0.0,
                     size,
                     pos: vec2(
                         (rand as u32 % map.width) as f32 * 16.0 * MAP_SCALE_FACTOR,
@@ -496,10 +501,18 @@ precision lowp float;
 varying vec2 uv;
 
 uniform sampler2D Texture;
+uniform lowp float time;
 
 void main() {
-    gl_FragColor = vec4(uv.xy,0.0,1.0);
-}
+    
+    if (texture2D(Texture, uv).b > 0.04){
+
+    gl_FragColor = vec4((sin(uv.x + time)+1.0)/2.0,(sin(uv.y + time)+1.0)/2.0, 0.65,1.0);
+    }else{
+
+    gl_FragColor = texture2D(Texture, uv);
+    }
+    }
 ";
 
 const DEFAULT_VERTEX_SHADER: &'static str = "#version 100
@@ -519,19 +532,33 @@ void main() {
 }
 ";
 static RAINBOW_SHADER: LazyLock<Material> = std::sync::LazyLock::new(|| {
+    let pipeline = PipelineParams {
+        alpha_blend: Some(BlendState::new(
+            Equation::Add,
+            BlendFactor::Value(BlendValue::SourceAlpha),
+            BlendFactor::OneMinusValue(BlendValue::SourceAlpha),
+        )),
+        color_blend: Some(BlendState::new(
+            Equation::Add,
+            BlendFactor::Value(BlendValue::SourceAlpha),
+            BlendFactor::OneMinusValue(BlendValue::SourceAlpha),
+        )),
+        ..Default::default()
+    };
     load_material(
         ShaderSource::Glsl {
             vertex: DEFAULT_VERTEX_SHADER,
             fragment: DEFAULT_FRAGMENT_SHADER,
         },
         MaterialParams {
+            pipeline_params: pipeline,
+            uniforms: vec![UniformDesc::new("time", UniformType::Float1)],
             ..Default::default()
         },
     )
     .unwrap()
 });
 struct Game<'a> {
-    state: State,
     cat: Cat,
     mice: Vec<Mouse<'a>>,
     camera: Camera2D,
@@ -541,7 +568,6 @@ struct Game<'a> {
 impl<'a> Game<'a> {
     fn new() -> Self {
         Self {
-            state: State::Menu,
             spawner: Spawner::new(),
             map: Map::new(),
             cat: Cat::new(),
@@ -622,11 +648,21 @@ impl<'a> Game<'a> {
                 (0.0, mouse.size.y),
                 (mouse.size.x, mouse.size.y),
             ];
-
+            if (((mouse.pos.x - self.cat.pos.x).powi(2) + (mouse.pos.x - self.cat.pos.y).powi(2))
+                .sqrt())
+            .abs()
+                > 10.0
+            {
+                mouse.direction = (mouse.pos - self.cat.pos).normalize_or_zero();
+            } else {
+                mouse.direction = vec2(rand::gen_range(-1.0, 2.0), rand::gen_range(-1.0, 2.0))
+            }
             for p in collisions {
                 let map_pos =
                     (mouse.pos + mouse.direction + vec2(p.0, p.1)) / (16.0 * MAP_SCALE_FACTOR);
-                if map_pos.y as u32 >= self.map.tiles.len() as u32 / self.map.width - 2 {
+                if self.map.width * map_pos.y as u32 + map_pos.x as u32
+                    >= self.map.tiles.len() as u32 / self.map.width
+                {
                     break;
                 }
 
@@ -635,14 +671,9 @@ impl<'a> Game<'a> {
 
                 if pottential_collider.collision {
                     mouse.direction *= -1.0;
+                    mouse.collision_cooldown = 7.0;
                     break;
                 }
-            }
-            if mouse.scare_clock <= 0.0 {
-                mouse.direction = (mouse.pos - self.cat.pos).normalize();
-                mouse.scare_clock = 3.0;
-            } else {
-                mouse.scare_clock -= get_frame_time();
             }
 
             mouse.pos += mouse.direction * mouse.speed;
@@ -650,6 +681,7 @@ impl<'a> Game<'a> {
     }
     async fn update(&mut self) {
         self.map.draw_map();
+        RAINBOW_SHADER.set_uniform("time", get_time() as f32 * 8.0);
         self.draw_mice();
         self.mouse_eatery();
         self.mouse_behaviour();
@@ -731,13 +763,14 @@ impl Menu {
         );
         draw_texture_ex(
             &self.button.texture,
-            self.button.rect.x,
-            self.button.rect.y,
+            self.button.rect.x * sf,
+            self.button.rect.y * sf,
             WHITE,
             DrawTextureParams {
                 ..Default::default()
             },
         );
+        let cat_pos = vec2(100.0, 82.0);
         if let Some(animation) = self.current_animation {
             let animation = &self.cat[animation];
             let clock = (self.animation_clock * 1000.0) as u32;
@@ -749,11 +782,14 @@ impl Menu {
                     } else {
                         draw_texture_ex(
                             &i.0,
-                            140.0 * sf,
-                            70.0 * sf,
+                            cat_pos.x * sf,
+                            cat_pos.y * sf,
                             WHITE,
                             DrawTextureParams {
-                                dest_size: Some(vec2(i.0.width() * sf, i.0.height() * sf)),
+                                dest_size: Some(vec2(
+                                    i.0.width() * sf * 1.5,
+                                    i.0.height() * sf * 1.5,
+                                )),
                                 ..Default::default()
                             },
                         );
@@ -766,14 +802,17 @@ impl Menu {
                 self.animation_clock = 0.0;
             }
         } else {
-            let text = &self.cat[0].0[0].0;
+            let texture = &self.cat[0].0[0].0;
             draw_texture_ex(
-                text,
-                140.0 * sf,
-                70.0 * sf,
+                texture,
+                cat_pos.x * sf,
+                cat_pos.y * sf,
                 WHITE,
                 DrawTextureParams {
-                    dest_size: Some(vec2(text.width() * sf, text.height() * sf)),
+                    dest_size: Some(vec2(
+                        texture.width() * sf * 1.5,
+                        texture.height() * sf * 1.5,
+                    )),
 
                     ..Default::default()
                 },
@@ -818,7 +857,15 @@ impl<'a> GameManager<'a> {
         }
     }
 }
-#[macroquad::main("catscapade")]
+fn conf() -> Conf {
+    Conf {
+        window_title: String::from("catscapade"),
+        window_width: 800,
+        window_height: 800,
+        ..Default::default()
+    }
+}
+#[macroquad::main(conf)]
 async fn main() {
     let mut game = GameManager::new();
     loop {
