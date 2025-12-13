@@ -2,7 +2,7 @@ use asefile::AsepriteFile;
 use image::*;
 use macroquad::{
     miniquad::{BlendFactor, BlendState, BlendValue, Equation},
-    prelude::*,
+    prelude::{camera::mouse, *},
 };
 use macroquad::{prelude::*, rand::rand};
 use std::{collections::HashMap, f32::consts::PI, sync::LazyLock, vec};
@@ -103,7 +103,7 @@ impl Cat {
 
         Self {
             last_rotation: 0.0,
-            pos: vec2(100.0, 200.0),
+            pos: vec2(750.0, 250.0),
             size: vec2(
                 animations.walk.0[0].0.width(),
                 animations.walk.0[0].0.height(),
@@ -178,7 +178,6 @@ impl Cat {
                 // break;
             }
         }
-        // draw_rectangle(self.pos.x, self.pos.y, self.size.x, self.size.y, WHITE);
         self.pos += self.direction;
 
         self.direction = self.direction.lerp(Vec2::ZERO, 0.3);
@@ -209,7 +208,8 @@ impl Cat {
     }
 }
 struct Mouse<'a> {
-    collision_cooldown: f32,
+    scare_timer: f32,
+    random_direction_cooldown: f32,
     is_rainbow: bool,
     speed: f32,
     pos: Vec2,
@@ -462,14 +462,15 @@ impl Spawner {
                     MOUSE_ANIMATION.0[0].0.width(),
                     MOUSE_ANIMATION.0[0].0.height(),
                 );
-                let rainbow = if rand::gen_range(0, 50) == 0 {
+                let rainbow = if rand::gen_range(0, 30) == 0 {
                     true
                 } else {
                     false
                 };
                 entities.push(Mouse {
-                    collision_cooldown: 0.0,
-                    speed: if rainbow { 0.5 } else { 1.0 },
+                    scare_timer: 0.0,
+                    random_direction_cooldown: 0.0,
+                    speed: if rainbow { 1.6 } else { 1.0 },
                     is_rainbow: rainbow,
                     size,
                     pos: vec2(
@@ -495,7 +496,7 @@ enum State {
     Menu,
     Game,
 }
-const DEFAULT_FRAGMENT_SHADER: &'static str = "#version 100
+const RAIINBOW_FRAGMENT_SHADER: &'static str = "#version 100
 precision lowp float;
 
 varying vec2 uv;
@@ -548,7 +549,7 @@ static RAINBOW_SHADER: LazyLock<Material> = std::sync::LazyLock::new(|| {
     load_material(
         ShaderSource::Glsl {
             vertex: DEFAULT_VERTEX_SHADER,
-            fragment: DEFAULT_FRAGMENT_SHADER,
+            fragment: RAIINBOW_FRAGMENT_SHADER,
         },
         MaterialParams {
             pipeline_params: pipeline,
@@ -558,16 +559,42 @@ static RAINBOW_SHADER: LazyLock<Material> = std::sync::LazyLock::new(|| {
     )
     .unwrap()
 });
+
 struct Game<'a> {
     cat: Cat,
     mice: Vec<Mouse<'a>>,
     camera: Camera2D,
     map: Map,
     spawner: Spawner,
+    timer: f32,
+    fade_out_clock: f32,
+    done: bool,
+    go_back_button: Button,
+    go_to_menu: bool,
+    kills: u32,
+    clock: Texture2D,
+    mouse_icon: Texture2D,
 }
 impl<'a> Game<'a> {
     fn new() -> Self {
+        let button = load_ase_texture(include_bytes!("../assets/back.ase"), None, None);
         Self {
+            mouse_icon: load_ase_texture(include_bytes!("../assets/mouse_icon.ase"), None, None),
+            clock: load_ase_texture(include_bytes!("../assets/clock.aseprite"), None, None),
+            go_back_button: Button {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: button.width(),
+                    h: button.height(),
+                },
+                texture: button,
+            },
+            go_to_menu: false,
+            kills: 0,
+            done: false,
+            fade_out_clock: 0.0,
+            timer: 30.0,
             spawner: Spawner::new(),
             map: Map::new(),
             cat: Cat::new(),
@@ -577,7 +604,9 @@ impl<'a> Game<'a> {
     }
     fn draw_mice(&self) {
         for mouse in self.mice.iter() {
-            gl_use_material(&RAINBOW_SHADER);
+            if mouse.is_rainbow {
+                gl_use_material(&RAINBOW_SHADER);
+            }
             let mut time = (get_time() * 1000.0) % mouse.animation.1 as f64;
             for i in &mouse.animation.0 {
                 if time <= i.1 as f64 {
@@ -597,8 +626,9 @@ impl<'a> Game<'a> {
                     time -= i.1 as f64;
                 }
             }
-
-            gl_use_default_material();
+            if mouse.is_rainbow {
+                gl_use_default_material();
+            }
         }
     }
     fn draw_camera(&self) {
@@ -635,33 +665,42 @@ impl<'a> Game<'a> {
                     && f.pos.y + p.1 > self.cat.pos.y
                 {
                     collide = true;
+                    self.kills += if f.is_rainbow { 3 } else { 1 };
                 }
             }
+
             !collide
         })
     }
     fn mouse_behaviour(&mut self) {
-        for mouse in self.mice.iter_mut() {
+        for (index, mouse) in self.mice.iter_mut().enumerate() {
             let collisions = [
                 (0.0, 0.0),
                 (mouse.size.x, 0.0),
                 (0.0, mouse.size.y),
                 (mouse.size.x, mouse.size.y),
             ];
-            if (((mouse.pos.x - self.cat.pos.x).powi(2) + (mouse.pos.x - self.cat.pos.y).powi(2))
+            mouse.scare_timer = (mouse.scare_timer - get_frame_time()).max(0.0);
+            if (((mouse.pos.x - self.cat.pos.x).powi(2) + (mouse.pos.y - self.cat.pos.y).powi(2))
                 .sqrt())
             .abs()
-                > 10.0
+                < 600.0
+                && mouse.scare_timer == 0.0
             {
+                mouse.scare_timer = if mouse.is_rainbow { 0.5 } else { 1.2 };
                 mouse.direction = (mouse.pos - self.cat.pos).normalize_or_zero();
+            } else if mouse.random_direction_cooldown < 0.0 {
+                mouse.direction = vec2(rand::gen_range(-1.0, 1.0), rand::gen_range(-1.0, 1.0))
+                    .normalize_or_zero();
+                mouse.random_direction_cooldown = rand::gen_range(1.0, 5.0);
             } else {
-                mouse.direction = vec2(rand::gen_range(-1.0, 2.0), rand::gen_range(-1.0, 2.0))
+                mouse.random_direction_cooldown -= get_frame_time();
             }
             for p in collisions {
-                let map_pos =
-                    (mouse.pos + mouse.direction + vec2(p.0, p.1)) / (16.0 * MAP_SCALE_FACTOR);
+                let map_pos = (mouse.pos + mouse.direction * mouse.speed + vec2(p.0, p.1))
+                    / (16.0 * MAP_SCALE_FACTOR);
                 if self.map.width * map_pos.y as u32 + map_pos.x as u32
-                    >= self.map.tiles.len() as u32 / self.map.width
+                    >= self.map.tiles.len() as u32
                 {
                     break;
                 }
@@ -671,13 +710,85 @@ impl<'a> Game<'a> {
 
                 if pottential_collider.collision {
                     mouse.direction *= -1.0;
-                    mouse.collision_cooldown = 7.0;
                     break;
                 }
             }
 
             mouse.pos += mouse.direction * mouse.speed;
         }
+    }
+    fn fade_out_menu(&mut self) {
+        if self.done {
+            set_default_camera();
+            clear_background(BLACK);
+            self.go_back_button.rect.x = (screen_width() - self.go_back_button.rect.w) / 2.0;
+            self.go_back_button.rect.y = (screen_height() - self.go_back_button.rect.h) / 2.0;
+            draw_texture(
+                &self.go_back_button.texture,
+                self.go_back_button.rect.x,
+                self.go_back_button.rect.y,
+                WHITE,
+            );
+
+            if self.go_back_button.is_clicked(mouse_position()) {
+                println!("wa");
+                self.go_to_menu = true;
+            }
+        } else {
+            if self.timer <= 0.0 {
+                println!("blurp fading out{}", self.fade_out_clock);
+                self.fade_out_clock += get_frame_time();
+                let fade_out = 2.0;
+                if self.fade_out_clock < fade_out {
+                    set_default_camera();
+                    draw_rectangle(
+                        0.0,
+                        0.0,
+                        screen_width(),
+                        screen_height(),
+                        BLACK.with_alpha(self.fade_out_clock / fade_out),
+                    );
+                    set_camera(&self.camera);
+                } else {
+                    self.done = true;
+                }
+            } else {
+                self.timer -= get_frame_time()
+            }
+        }
+    }
+    fn draw_hud(&self) {
+        set_default_camera();
+
+        draw_text(
+            &((self.timer as i32).max(0)).to_string(),
+            screen_width() - 120.00,
+            40.0,
+            60.0,
+            WHITE,
+        );
+        draw_texture_ex(
+            &self.clock,
+            screen_width() - 60.,
+            -7.5,
+            WHITE,
+            DrawTextureParams {
+                dest_size: Some(vec2(self.clock.width(), self.clock.height()) * 4.0),
+                ..Default::default()
+            },
+        );
+        draw_text(&self.kills.to_string(), 80.0, 55.0, 60.0, WHITE);
+        draw_texture_ex(
+            &self.mouse_icon,
+            5.0,
+            0.0,
+            WHITE,
+            DrawTextureParams {
+                dest_size: Some(vec2(self.mouse_icon.width(), self.mouse_icon.height()) * 4.0),
+                ..Default::default()
+            },
+        );
+        set_camera(&self.camera);
     }
     async fn update(&mut self) {
         self.map.draw_map();
@@ -687,8 +798,11 @@ impl<'a> Game<'a> {
         self.mouse_behaviour();
         self.cat.update(&self.map);
         self.spawner.update(&mut self.mice, &self.map);
+
         self.camera.target = self.cat.pos;
         self.draw_camera();
+        self.draw_hud();
+        self.fade_out_menu();
     }
 }
 struct Button {
@@ -771,6 +885,23 @@ impl Menu {
             },
         );
         let cat_pos = vec2(100.0, 82.0);
+        let draw_still = || {
+            let texture = &self.cat[0].0[0].0;
+            draw_texture_ex(
+                texture,
+                cat_pos.x * sf,
+                cat_pos.y * sf,
+                WHITE,
+                DrawTextureParams {
+                    dest_size: Some(vec2(
+                        texture.width() * sf * 1.5,
+                        texture.height() * sf * 1.5,
+                    )),
+
+                    ..Default::default()
+                },
+            );
+        };
         if let Some(animation) = self.current_animation {
             let animation = &self.cat[animation];
             let clock = (self.animation_clock * 1000.0) as u32;
@@ -800,23 +931,10 @@ impl Menu {
             } else {
                 self.current_animation = None;
                 self.animation_clock = 0.0;
+                (draw_still)()
             }
         } else {
-            let texture = &self.cat[0].0[0].0;
-            draw_texture_ex(
-                texture,
-                cat_pos.x * sf,
-                cat_pos.y * sf,
-                WHITE,
-                DrawTextureParams {
-                    dest_size: Some(vec2(
-                        texture.width() * sf * 1.5,
-                        texture.height() * sf * 1.5,
-                    )),
-
-                    ..Default::default()
-                },
-            );
+            (draw_still)()
         }
         if self.timer <= 0.0 {
             self.timer = 7.0;
@@ -833,23 +951,32 @@ impl Menu {
 }
 struct GameManager<'a> {
     menu: Menu,
-    game: Game<'a>,
+    game: Option<Game<'a>>,
     state: State,
 }
 impl<'a> GameManager<'a> {
     fn new() -> Self {
         Self {
             state: State::Menu,
-            game: Game::new(),
+            game: None,
             menu: Menu::new(),
         }
     }
     async fn update(&mut self) {
         match self.state {
-            State::Game => self.game.update().await,
+            State::Game => {
+                let game = self.game.as_mut().unwrap();
+                if game.go_to_menu {
+                    self.state = State::Menu;
+                    self.menu = Menu::new();
+                } else {
+                    game.update().await;
+                }
+            }
             State::Menu => {
                 if self.menu.play {
-                    self.state = State::Game
+                    self.state = State::Game;
+                    self.game = Some(Game::new())
                 } else {
                     self.menu.update().await
                 }
