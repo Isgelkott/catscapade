@@ -2,9 +2,8 @@ use asefile::AsepriteFile;
 use image::*;
 use macroquad::{
     miniquad::{BlendFactor, BlendState, BlendValue, Equation},
-    prelude::{camera::mouse, *},
+    prelude::*,
 };
-use macroquad::{prelude::*, rand::rand};
 use std::{collections::HashMap, f32::consts::PI, sync::LazyLock, vec};
 fn load_ase_texture(bytes: &[u8], layer: Option<u32>, frame: Option<u32>) -> Texture2D {
     let img = AsepriteFile::read(bytes).unwrap();
@@ -175,6 +174,7 @@ impl Cat {
                 } else if self.pos.y == y0 || self.pos.y == y1 {
                     self.direction.y = 0.0;
                 }
+
                 // break;
             }
         }
@@ -218,6 +218,7 @@ struct Mouse<'a> {
     animation: &'a Animation,
 }
 const SCREEN_SIZE: Vec2 = Vec2 { x: 160.0, y: 160.0 };
+
 #[derive(Debug, PartialEq)]
 
 enum Layer {
@@ -487,7 +488,7 @@ impl Spawner {
         self.clock -= get_frame_time();
         if self.clock <= 0.0 {
             self.clock = 10.0;
-            Spawner::spawn_wave(entities, map)
+            Self::spawn_wave(entities, map)
         }
     }
 }
@@ -559,7 +560,8 @@ static RAINBOW_SHADER: LazyLock<Material> = std::sync::LazyLock::new(|| {
     )
     .unwrap()
 });
-
+static FONT: LazyLock<Font> =
+    LazyLock::new(|| load_ttf_font_from_bytes(include_bytes!("../assets/GOUDYSTO.TTF")).unwrap());
 struct Game<'a> {
     cat: Cat,
     mice: Vec<Mouse<'a>>,
@@ -718,43 +720,51 @@ impl<'a> Game<'a> {
         }
     }
     fn fade_out_menu(&mut self) {
-        if self.done {
-            set_default_camera();
-            clear_background(BLACK);
-            self.go_back_button.rect.x = (screen_width() - self.go_back_button.rect.w) / 2.0;
-            self.go_back_button.rect.y = (screen_height() - self.go_back_button.rect.h) / 2.0;
-            draw_texture(
-                &self.go_back_button.texture,
-                self.go_back_button.rect.x,
-                self.go_back_button.rect.y,
-                WHITE,
-            );
+        set_default_camera();
+        clear_background(BLACK);
+        self.go_back_button.rect.x = (screen_width() - self.go_back_button.rect.w) / 2.0;
+        self.go_back_button.rect.y = (screen_height() - self.go_back_button.rect.h + 300.0) / 2.0;
+        draw_texture(
+            &self.go_back_button.texture,
+            self.go_back_button.rect.x,
+            self.go_back_button.rect.y,
+            WHITE,
+        );
+        let font_size = 30;
+        draw_text_ex(
+            "Good work soldier!",
+            (screen_width() - 590.0) / 2.0,
+            (screen_height() - 60.0) / 2.0,
+            TextParams {
+                font: Some(&FONT),
+                font_size,
+                ..Default::default()
+            },
+        );
+        draw_text_ex(
+            "You caught ",
+            (screen_width() - 550.0) / 2.0,
+            screen_height() / 2.0,
+            TextParams {
+                font: Some(&FONT),
+                font_size,
+                ..Default::default()
+            },
+        );
+        draw_text_ex(
+            &format!("{} mice!", self.kills),
+            (screen_width() + 200.0) / 2.0,
+            screen_height() / 2.0,
+            TextParams {
+                font: Some(&FONT),
+                font_size,
+                color: Color::from_hex(0xfbf236),
+                ..Default::default()
+            },
+        );
 
-            if self.go_back_button.is_clicked(mouse_position()) {
-                println!("wa");
-                self.go_to_menu = true;
-            }
-        } else {
-            if self.timer <= 0.0 {
-                println!("blurp fading out{}", self.fade_out_clock);
-                self.fade_out_clock += get_frame_time();
-                let fade_out = 2.0;
-                if self.fade_out_clock < fade_out {
-                    set_default_camera();
-                    draw_rectangle(
-                        0.0,
-                        0.0,
-                        screen_width(),
-                        screen_height(),
-                        BLACK.with_alpha(self.fade_out_clock / fade_out),
-                    );
-                    set_camera(&self.camera);
-                } else {
-                    self.done = true;
-                }
-            } else {
-                self.timer -= get_frame_time()
-            }
+        if self.go_back_button.is_clicked(mouse_position()) {
+            self.go_to_menu = true;
         }
     }
     fn draw_hud(&self) {
@@ -791,18 +801,41 @@ impl<'a> Game<'a> {
         set_camera(&self.camera);
     }
     async fn update(&mut self) {
-        self.map.draw_map();
-        RAINBOW_SHADER.set_uniform("time", get_time() as f32 * 8.0);
-        self.draw_mice();
-        self.mouse_eatery();
-        self.mouse_behaviour();
-        self.cat.update(&self.map);
-        self.spawner.update(&mut self.mice, &self.map);
+        if self.done {
+            self.fade_out_menu();
+        } else {
+            self.map.draw_map();
+            RAINBOW_SHADER.set_uniform("time", get_time() as f32 * 8.0);
+            self.draw_mice();
+            self.mouse_eatery();
+            self.mouse_behaviour();
+            self.cat.update(&self.map);
+            self.spawner.update(&mut self.mice, &self.map);
 
-        self.camera.target = self.cat.pos;
-        self.draw_camera();
-        self.draw_hud();
-        self.fade_out_menu();
+            self.camera.target = self.cat.pos;
+            self.draw_camera();
+            self.draw_hud();
+            if self.timer <= 0.0 {
+                println!("blurp fading out{}", self.fade_out_clock);
+                self.fade_out_clock += get_frame_time();
+                let fade_out = 2.0;
+                if self.fade_out_clock < fade_out {
+                    set_default_camera();
+                    draw_rectangle(
+                        0.0,
+                        0.0,
+                        screen_width(),
+                        screen_height(),
+                        BLACK.with_alpha(self.fade_out_clock / fade_out),
+                    );
+                    set_camera(&self.camera);
+                } else {
+                    self.done = true;
+                }
+            } else {
+                self.timer -= get_frame_time()
+            }
+        }
     }
 }
 struct Button {
@@ -823,26 +856,34 @@ struct Menu {
     button: Button,
     background: Texture2D,
     cat: Vec<Animation>,
-    timer: f32,
+    animation_timer: f32,
     animation_clock: f32,
     current_animation: Option<usize>,
     play: bool,
+    high_score: u32,
 }
 
 impl Menu {
     fn new() -> Self {
+        let high_score = quad_storage::LocalStorage::default()
+            .get("high_score")
+            .unwrap_or("0".to_string())
+            .parse::<u32>()
+            .unwrap_or_default();
         let play = load_ase_texture(include_bytes!("../assets/play.ase"), None, None);
         let bsize = 0.2 * vec2(play.width(), play.height());
         let background = load_ase_texture(include_bytes!("../assets/background.ase"), None, None);
         dbg!(background.width());
         let size = (background.width(), background.height());
         Self {
+            high_score,
             animation_clock: 0.0,
             current_animation: None,
             play: false,
-            timer: 0.0,
+            animation_timer: 0.0,
             cat: vec![
                 load_animation_from_tag(include_bytes!("../assets/main_menu_cat.ase"), "still"),
+                load_animation_from_tag(include_bytes!("../assets/main_menu_cat.ase"), "blink"),
                 load_animation_from_tag(include_bytes!("../assets/main_menu_cat.ase"), "lick"),
                 load_animation_from_tag(include_bytes!("../assets/main_menu_cat.ase"), "scratch"),
             ],
@@ -902,6 +943,13 @@ impl Menu {
                 },
             );
         };
+        draw_text(
+            &format!("High score: {}", self.high_score.to_string()),
+            10.0 * sf,
+            (self.background.height() - 10.0) * sf,
+            20.0 * sf,
+            WHITE,
+        );
         if let Some(animation) = self.current_animation {
             let animation = &self.cat[animation];
             let clock = (self.animation_clock * 1000.0) as u32;
@@ -936,11 +984,11 @@ impl Menu {
         } else {
             (draw_still)()
         }
-        if self.timer <= 0.0 {
-            self.timer = 7.0;
+        if self.animation_timer <= 0.0 {
+            self.animation_timer = 7.0;
             self.current_animation = Some(rand::gen_range(1, self.cat.len()));
         } else {
-            self.timer -= get_frame_time();
+            self.animation_timer -= get_frame_time();
         }
         let mouse_pos = mouse_position();
         let mouse_pos = (mouse_pos.0 / sf, mouse_pos.1 / sf);
@@ -969,6 +1017,11 @@ impl<'a> GameManager<'a> {
                 if game.go_to_menu {
                     self.state = State::Menu;
                     self.menu = Menu::new();
+                    if game.kills > self.menu.high_score {
+                        self.menu.high_score = game.kills;
+                        let mut storage = quad_storage::LocalStorage::default();
+                        storage.set("high_score", &game.kills.to_string());
+                    }
                 } else {
                     game.update().await;
                 }
