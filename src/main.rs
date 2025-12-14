@@ -86,7 +86,7 @@ type Animation = (Vec<(Texture2D, u32)>, u32);
 struct PlayerAnimations {
     walk: Animation,
 }
-const CAT_SPEED: f32 = 70.0;
+const CAT_SPEED: f32 = 65.0;
 struct Cat {
     pos: Vec2,
     size: Vec2,
@@ -154,26 +154,18 @@ impl Cat {
                 &map.tiles[map_pos.y as usize * map.width as usize + map_pos.x as usize];
 
             if pottential_collider.collision && !is_key_down(KeyCode::Space) {
-                println!(
-                    "collid with {:?}, with:{index} cat pos is {:?}, map_pos:{:?}",
-                    pottential_collider,
-                    (self.pos + self.direction),
-                    map_pos
-                );
-
                 let x0 = map_pos.x.floor() * 16.0 * MAP_SCALE_FACTOR - p.0;
                 let x1 = (map_pos.x.floor() + 1.0) * MAP_SCALE_FACTOR * 16.0 - p.0;
                 let y0 = map_pos.y.floor() * 16.0 * MAP_SCALE_FACTOR - p.1;
                 let y1 = map_pos.y.ceil() * MAP_SCALE_FACTOR * 16.0 - p.1;
-
-                dbg!(y1);
-
-                self.pos.x = self.pos.x.clamp(x0, x1);
-                self.pos.y = self.pos.y.clamp(y0, y1);
-                if self.pos.x == x0 || self.pos.x == x1 {
-                    self.direction.x = 0.0;
-                } else if self.pos.y == y0 || self.pos.y == y1 {
-                    self.direction.y = 0.0;
+                if self.pos.y + self.direction.y != y0 {
+                    self.pos.x = self.pos.x.clamp(x0, x1);
+                    self.pos.y = self.pos.y.clamp(y0, y1);
+                    if self.pos.x == x0 || self.pos.x == x1 {
+                        self.direction.x = 0.0;
+                    } else if self.pos.y == y0 || self.pos.y == y1 {
+                        self.direction.y = 0.0;
+                    }
                 }
 
                 // break;
@@ -181,7 +173,7 @@ impl Cat {
         }
         self.pos += self.direction;
 
-        self.direction = self.direction.lerp(Vec2::ZERO, 0.3);
+        self.direction *= 0.8;
         if self.direction.x.abs() < 0.3 && self.direction.y.abs() < 0.3 {
             self.direction = Vec2::ZERO;
         }
@@ -212,12 +204,12 @@ struct Mouse<'a> {
     scare_timer: f32,
     random_direction_cooldown: f32,
     is_rainbow: bool,
-    speed: f32,
     pos: Vec2,
     size: Vec2,
     direction: Vec2,
     animation: &'a Animation,
 }
+
 const SCREEN_SIZE: Vec2 = Vec2 { x: 160.0, y: 160.0 };
 
 #[derive(Debug, PartialEq)]
@@ -449,7 +441,6 @@ impl Spawner {
         Self { clock: 0.0 }
     }
     fn spawn_wave(entities: &mut Vec<Mouse>, map: &Map) {
-        println!("spawnin");
         let wave_size = 30;
         let mut dealt_with = Vec::with_capacity(30);
         while dealt_with.len() < wave_size {
@@ -472,7 +463,7 @@ impl Spawner {
                 entities.push(Mouse {
                     scare_timer: 0.0,
                     random_direction_cooldown: 0.0,
-                    speed: if rainbow { 250.0 } else { 150.0 },
+
                     is_rainbow: rainbow,
                     size,
                     pos: vec2(
@@ -563,6 +554,15 @@ static RAINBOW_SHADER: LazyLock<Material> = std::sync::LazyLock::new(|| {
 });
 static FONT: LazyLock<Font> =
     LazyLock::new(|| load_ttf_font_from_bytes(include_bytes!("../assets/GOUDYSTO.TTF")).unwrap());
+
+struct Debug {
+    mouse_cam: bool,
+    mouse: usize,
+}
+static mut DEBUG: Debug = Debug {
+    mouse_cam: true,
+    mouse: 0,
+};
 struct Game<'a> {
     cat: Cat,
     mice: Vec<Mouse<'a>>,
@@ -636,6 +636,7 @@ impl<'a> Game<'a> {
     }
     fn draw_camera(&self) {
         set_default_camera();
+
         draw_texture_ex(
             &self.camera.render_target.as_ref().unwrap().texture,
             0.0,
@@ -687,10 +688,10 @@ impl<'a> Game<'a> {
             if (((mouse.pos.x - self.cat.pos.x).powi(2) + (mouse.pos.y - self.cat.pos.y).powi(2))
                 .sqrt())
             .abs()
-                < 1000.0
+                < 100.0
                 && mouse.scare_timer == 0.0
             {
-                mouse.scare_timer = if mouse.is_rainbow { 0.5 } else { 0.7 };
+                mouse.scare_timer = if mouse.is_rainbow { 0.5 } else { 0.3 };
                 mouse.direction = (mouse.pos - self.cat.pos).normalize_or_zero();
             } else if mouse.random_direction_cooldown < 0.0 {
                 mouse.direction = vec2(rand::gen_range(-1.0, 1.0), rand::gen_range(-1.0, 1.0))
@@ -700,7 +701,9 @@ impl<'a> Game<'a> {
                 mouse.random_direction_cooldown -= get_frame_time();
             }
             for p in collisions {
-                let map_pos = (mouse.pos + mouse.direction * mouse.speed + vec2(p.0, p.1))
+                let map_pos = (mouse.pos
+                    + mouse.direction * if mouse.is_rainbow { 250.0 } else { 150.0 }
+                    + vec2(p.0, p.1))
                     / (16.0 * MAP_SCALE_FACTOR);
                 if self.map.width * map_pos.y as u32 + map_pos.x as u32
                     >= self.map.tiles.len() as u32
@@ -712,12 +715,19 @@ impl<'a> Game<'a> {
                     [map_pos.y as usize * self.map.width as usize + map_pos.x as usize];
 
                 if pottential_collider.collision {
+                    if mouse.scare_timer > 0.0 {
+                        mouse.direction =
+                            vec2(rand::gen_range(-1.0, 1.0), rand::gen_range(-1.0, 1.0))
+                                .normalize_or_zero();
+                    }
                     mouse.direction *= -1.0;
+
                     break;
                 }
             }
 
-            mouse.pos += mouse.direction * mouse.speed * get_frame_time();
+            mouse.pos +=
+                mouse.direction * if mouse.is_rainbow { 250.0 } else { 150.0 } * get_frame_time();
         }
     }
     fn fade_out_menu(&mut self) {
@@ -809,15 +819,36 @@ impl<'a> Game<'a> {
             RAINBOW_SHADER.set_uniform("time", get_time() as f32 * 8.0);
             self.draw_mice();
             self.mouse_eatery();
+            if is_key_pressed(KeyCode::G) {
+                self.mice.push(Mouse {
+                    scare_timer: 0.0,
+                    random_direction_cooldown: 0.0,
+                    is_rainbow: false,
+                    pos: vec2(200.0, 200.0),
+                    size: vec2(
+                        MOUSE_ANIMATION.0[0].0.width(),
+                        MOUSE_ANIMATION.0[0].0.height(),
+                    ),
+                    direction: Vec2::ZERO,
+                    animation: &MOUSE_ANIMATION,
+                });
+            }
             self.mouse_behaviour();
             self.cat.update(&self.map);
-            self.spawner.update(&mut self.mice, &self.map);
-
-            self.camera.target = self.cat.pos;
+            // self.spawner.update(&mut self.mice, &self.map);
+            unsafe {
+                if DEBUG.mouse_cam && is_mouse_button_pressed(MouseButton::Left) {
+                    DEBUG.mouse += 1;
+                }
+                if DEBUG.mouse_cam && self.mice.len() > 0 {
+                    self.camera.target = self.mice[DEBUG.mouse].pos;
+                } else {
+                    self.camera.target = self.cat.pos;
+                }
+            }
             self.draw_camera();
             self.draw_hud();
             if self.timer <= 0.0 {
-                println!("blurp fading out{}", self.fade_out_clock);
                 self.fade_out_clock += get_frame_time();
                 let fade_out = 2.0;
                 if self.fade_out_clock < fade_out {
