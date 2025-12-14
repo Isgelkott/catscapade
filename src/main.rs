@@ -167,6 +167,7 @@ impl Cat {
                 let y1 = map_pos.y.ceil() * MAP_SCALE_FACTOR * 16.0 - p.1;
 
                 dbg!(y1);
+
                 self.pos.x = self.pos.x.clamp(x0, x1);
                 self.pos.y = self.pos.y.clamp(y0, y1);
                 if self.pos.x == x0 || self.pos.x == x1 {
@@ -471,7 +472,7 @@ impl Spawner {
                 entities.push(Mouse {
                     scare_timer: 0.0,
                     random_direction_cooldown: 0.0,
-                    speed: if rainbow { 1.6 } else { 1.0 },
+                    speed: if rainbow { 250.0 } else { 150.0 },
                     is_rainbow: rainbow,
                     size,
                     pos: vec2(
@@ -675,7 +676,7 @@ impl<'a> Game<'a> {
         })
     }
     fn mouse_behaviour(&mut self) {
-        for (index, mouse) in self.mice.iter_mut().enumerate() {
+        for mouse in self.mice.iter_mut() {
             let collisions = [
                 (0.0, 0.0),
                 (mouse.size.x, 0.0),
@@ -686,10 +687,10 @@ impl<'a> Game<'a> {
             if (((mouse.pos.x - self.cat.pos.x).powi(2) + (mouse.pos.y - self.cat.pos.y).powi(2))
                 .sqrt())
             .abs()
-                < 600.0
+                < 1000.0
                 && mouse.scare_timer == 0.0
             {
-                mouse.scare_timer = if mouse.is_rainbow { 0.5 } else { 1.2 };
+                mouse.scare_timer = if mouse.is_rainbow { 0.5 } else { 0.7 };
                 mouse.direction = (mouse.pos - self.cat.pos).normalize_or_zero();
             } else if mouse.random_direction_cooldown < 0.0 {
                 mouse.direction = vec2(rand::gen_range(-1.0, 1.0), rand::gen_range(-1.0, 1.0))
@@ -716,7 +717,7 @@ impl<'a> Game<'a> {
                 }
             }
 
-            mouse.pos += mouse.direction * mouse.speed;
+            mouse.pos += mouse.direction * mouse.speed * get_frame_time();
         }
     }
     fn fade_out_menu(&mut self) {
@@ -922,6 +923,7 @@ impl Menu {
             self.button.rect.y * sf,
             WHITE,
             DrawTextureParams {
+                dest_size: Some(vec2(self.button.rect.w, self.button.rect.h) * sf),
                 ..Default::default()
             },
         );
@@ -1022,6 +1024,7 @@ impl<'a> GameManager<'a> {
                         let mut storage = quad_storage::LocalStorage::default();
                         storage.set("high_score", &game.kills.to_string());
                     }
+                    self.game = None;
                 } else {
                     game.update().await;
                 }
@@ -1048,6 +1051,7 @@ fn conf() -> Conf {
 #[macroquad::main(conf)]
 async fn main() {
     let mut game = GameManager::new();
+    rand::srand(get_time() as u64);
     loop {
         game.update().await;
         next_frame().await;
