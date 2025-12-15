@@ -1,4 +1,4 @@
 /target
 /assets/cat_old.aseprite
 /web/*wasm
-./local.data
+local.data

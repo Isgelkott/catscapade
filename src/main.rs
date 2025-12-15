@@ -86,7 +86,7 @@ type Animation = (Vec<(Texture2D, u32)>, u32);
 struct PlayerAnimations {
     walk: Animation,
 }
-const CAT_SPEED: f32 = 65.0;
+const CAT_SPEED: f32 = 200.0;
 struct Cat {
     pos: Vec2,
     size: Vec2,
@@ -136,7 +136,7 @@ impl Cat {
             0.5 * PI + direction.y.atan2(direction.x)
         };
         self.last_rotation = rotation;
-        self.direction += direction.normalize_or_zero() * CAT_SPEED * get_frame_time();
+        self.direction += direction.normalize_or_zero();
         let shrunk_collision = 4.0;
         let collision_points = [
             (shrunk_collision, shrunk_collision),
@@ -171,7 +171,7 @@ impl Cat {
                 // break;
             }
         }
-        self.pos += self.direction;
+        self.pos += self.direction.normalize_or_zero() * CAT_SPEED * get_frame_time();
 
         self.direction *= 0.8;
         if self.direction.x.abs() < 0.3 && self.direction.y.abs() < 0.3 {
@@ -560,7 +560,7 @@ struct Debug {
     mouse: usize,
 }
 static mut DEBUG: Debug = Debug {
-    mouse_cam: true,
+    mouse_cam: false,
     mouse: 0,
 };
 struct Game<'a> {
@@ -715,13 +715,23 @@ impl<'a> Game<'a> {
                     [map_pos.y as usize * self.map.width as usize + map_pos.x as usize];
 
                 if pottential_collider.collision {
-                    if mouse.scare_timer > 0.0 {
-                        mouse.direction =
-                            vec2(rand::gen_range(-1.0, 1.0), rand::gen_range(-1.0, 1.0))
-                                .normalize_or_zero();
-                    }
-                    mouse.direction *= -1.0;
+                    if pottential_collider.collision && !is_key_down(KeyCode::Space) {
+                        let x0 = map_pos.x.floor() * 16.0 * MAP_SCALE_FACTOR - p.0;
+                        let x1 = (map_pos.x.floor() + 1.0) * MAP_SCALE_FACTOR * 16.0 - p.0;
+                        let y0 = map_pos.y.floor() * 16.0 * MAP_SCALE_FACTOR - p.1;
+                        let y1 = map_pos.y.ceil() * MAP_SCALE_FACTOR * 16.0 - p.1;
+                        if mouse.pos.y + mouse.direction.y != y0 {
+                            mouse.pos.x = mouse.pos.x.clamp(x0, x1);
+                            mouse.pos.y = mouse.pos.y.clamp(y0, y1);
+                            if mouse.pos.x == x0 || mouse.pos.x == x1 {
+                                mouse.direction.x = 0.0;
+                            } else if mouse.pos.y == y0 || mouse.pos.y == y1 {
+                                mouse.direction.y = 0.0;
+                            }
+                        }
 
+                        // break;
+                    }
                     break;
                 }
             }
@@ -835,7 +845,7 @@ impl<'a> Game<'a> {
             }
             self.mouse_behaviour();
             self.cat.update(&self.map);
-            // self.spawner.update(&mut self.mice, &self.map);
+            self.spawner.update(&mut self.mice, &self.map);
             unsafe {
                 if DEBUG.mouse_cam && is_mouse_button_pressed(MouseButton::Left) {
                     DEBUG.mouse += 1;
