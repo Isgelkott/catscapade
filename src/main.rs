@@ -148,12 +148,12 @@ impl Cat {
             ),
         ];
 
-        for (index, p) in collision_points.iter().enumerate() {
+        for p in collision_points.iter() {
             let map_pos = (self.pos + self.direction + vec2(p.0, p.1)) / (16.0 * MAP_SCALE_FACTOR);
             let pottential_collider =
                 &map.tiles[map_pos.y as usize * map.width as usize + map_pos.x as usize];
 
-            if pottential_collider.collision && !is_key_down(KeyCode::Space) {
+            if pottential_collider.collision {
                 let x0 = map_pos.x.floor() * 16.0 * MAP_SCALE_FACTOR - p.0;
                 let x1 = (map_pos.x.floor() + 1.0) * MAP_SCALE_FACTOR * 16.0 - p.0;
                 let y0 = map_pos.y.floor() * 16.0 * MAP_SCALE_FACTOR - p.1;
@@ -205,6 +205,7 @@ struct Mouse<'a> {
     random_direction_cooldown: f32,
     is_rainbow: bool,
     pos: Vec2,
+    speed: f32,
     size: Vec2,
     direction: Vec2,
     animation: &'a Animation,
@@ -461,6 +462,7 @@ impl Spawner {
                     false
                 };
                 entities.push(Mouse {
+                    speed: if rainbow { 250.0 } else { 150.0 },
                     scare_timer: 0.0,
                     random_direction_cooldown: 0.0,
 
@@ -560,7 +562,7 @@ struct Debug {
     mouse: usize,
 }
 static mut DEBUG: Debug = Debug {
-    mouse_cam: false,
+    mouse_cam: true,
     mouse: 0,
 };
 struct Game<'a> {
@@ -678,12 +680,6 @@ impl<'a> Game<'a> {
     }
     fn mouse_behaviour(&mut self) {
         for mouse in self.mice.iter_mut() {
-            let collisions = [
-                (0.0, 0.0),
-                (mouse.size.x, 0.0),
-                (0.0, mouse.size.y),
-                (mouse.size.x, mouse.size.y),
-            ];
             mouse.scare_timer = (mouse.scare_timer - get_frame_time()).max(0.0);
             if (((mouse.pos.x - self.cat.pos.x).powi(2) + (mouse.pos.y - self.cat.pos.y).powi(2))
                 .sqrt())
@@ -700,44 +696,43 @@ impl<'a> Game<'a> {
             } else {
                 mouse.random_direction_cooldown -= get_frame_time();
             }
-            for p in collisions {
-                let map_pos = (mouse.pos
-                    + mouse.direction * if mouse.is_rainbow { 250.0 } else { 150.0 }
-                    + vec2(p.0, p.1))
+            let collisions = [
+                (0.0, 0.0),
+                (mouse.size.x, 0.0),
+                (0.0, mouse.size.y),
+                (mouse.size.x, mouse.size.y),
+            ];
+            for p in collisions.iter() {
+                let map_pos = (mouse.pos + mouse.direction * mouse.speed + vec2(p.0, p.1))
                     / (16.0 * MAP_SCALE_FACTOR);
                 if self.map.width * map_pos.y as u32 + map_pos.x as u32
                     >= self.map.tiles.len() as u32
                 {
                     break;
                 }
-
+                let map_pos =
+                    (mouse.pos + mouse.direction + vec2(p.0, p.1)) / (16.0 * MAP_SCALE_FACTOR);
                 let pottential_collider = &self.map.tiles
                     [map_pos.y as usize * self.map.width as usize + map_pos.x as usize];
 
                 if pottential_collider.collision {
-                    if pottential_collider.collision && !is_key_down(KeyCode::Space) {
-                        let x0 = map_pos.x.floor() * 16.0 * MAP_SCALE_FACTOR - p.0;
-                        let x1 = (map_pos.x.floor() + 1.0) * MAP_SCALE_FACTOR * 16.0 - p.0;
-                        let y0 = map_pos.y.floor() * 16.0 * MAP_SCALE_FACTOR - p.1;
-                        let y1 = map_pos.y.ceil() * MAP_SCALE_FACTOR * 16.0 - p.1;
-                        if mouse.pos.y + mouse.direction.y != y0 {
-                            mouse.pos.x = mouse.pos.x.clamp(x0, x1);
-                            mouse.pos.y = mouse.pos.y.clamp(y0, y1);
-                            if mouse.pos.x == x0 || mouse.pos.x == x1 {
-                                mouse.direction.x = 0.0;
-                            } else if mouse.pos.y == y0 || mouse.pos.y == y1 {
-                                mouse.direction.y = 0.0;
-                            }
+                    let x0 = map_pos.x.floor() * 16.0 * MAP_SCALE_FACTOR - p.0;
+                    let x1 = (map_pos.x.floor() + 1.0) * MAP_SCALE_FACTOR * 16.0 - p.0;
+                    let y0 = map_pos.y.floor() * 16.0 * MAP_SCALE_FACTOR - p.1;
+                    let y1 = map_pos.y.ceil() * MAP_SCALE_FACTOR * 16.0 - p.1;
+                    if mouse.pos.y + mouse.direction.y != y0 {
+                        mouse.pos.x = mouse.pos.x.clamp(x0, x1);
+                        mouse.pos.y = mouse.pos.y.clamp(y0, y1);
+                        if mouse.pos.x == x0 || mouse.pos.x == x1 {
+                            mouse.direction.x = 0.0;
+                        } else if mouse.pos.y == y0 || mouse.pos.y == y1 {
+                            mouse.direction.y = 0.0;
                         }
-
-                        // break;
                     }
-                    break;
                 }
             }
 
-            mouse.pos +=
-                mouse.direction * if mouse.is_rainbow { 250.0 } else { 150.0 } * get_frame_time();
+            mouse.pos += mouse.direction * mouse.speed * get_frame_time();
         }
     }
     fn fade_out_menu(&mut self) {
@@ -831,6 +826,7 @@ impl<'a> Game<'a> {
             self.mouse_eatery();
             if is_key_pressed(KeyCode::G) {
                 self.mice.push(Mouse {
+                    speed: 150.0,
                     scare_timer: 0.0,
                     random_direction_cooldown: 0.0,
                     is_rainbow: false,
@@ -845,7 +841,7 @@ impl<'a> Game<'a> {
             }
             self.mouse_behaviour();
             self.cat.update(&self.map);
-            self.spawner.update(&mut self.mice, &self.map);
+            // self.spawner.update(&mut self.mice, &self.map);
             unsafe {
                 if DEBUG.mouse_cam && is_mouse_button_pressed(MouseButton::Left) {
                     DEBUG.mouse += 1;
