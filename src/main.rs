@@ -218,6 +218,7 @@ const SCREEN_SIZE: Vec2 = Vec2 { x: 160.0, y: 160.0 };
 enum Layer {
     Floor,
     Decor,
+    Decor2,
     Collision,
 }
 impl Layer {
@@ -226,6 +227,7 @@ impl Layer {
             "floor" => Self::Floor,
             "decor" => Self::Decor,
             "collision" => Self::Collision,
+            "decor2" => Self::Decor2,
             _ => unreachable!(),
         }
     }
@@ -386,7 +388,7 @@ fn load_tilemap(tilemap: &str, tileset: &str) -> (Vec<Tile>, u32) {
                         }
                         tile.textures
                             .push((id % tile_set_width, id / tile_set_width));
-                        tile.layers.push(Layer::from_str(&name));
+                        tile.layers.push(Layer::from_str(name));
                     }
                 }
             }
@@ -445,7 +447,7 @@ impl Spawner {
         let wave_size = 30;
         let mut dealt_with = Vec::with_capacity(30);
         while dealt_with.len() < wave_size {
-            let rand = rand::gen_range(0, map.tiles.len());
+            let rand = rand::gen_range(0, map.tiles.len() - 1);
             if dealt_with.contains(&rand) {
                 continue;
             }
@@ -456,11 +458,7 @@ impl Spawner {
                     MOUSE_ANIMATION.0[0].0.width(),
                     MOUSE_ANIMATION.0[0].0.height(),
                 );
-                let rainbow = if rand::gen_range(0, 30) == 0 {
-                    true
-                } else {
-                    false
-                };
+                let rainbow = rand::gen_range(0, 30) == 0;
                 entities.push(Mouse {
                     speed: if rainbow { 250.0 } else { 150.0 },
                     scare_timer: 0.0,
@@ -491,7 +489,7 @@ enum State {
     Menu,
     Game,
 }
-const RAIINBOW_FRAGMENT_SHADER: &'static str = "#version 100
+const RAIINBOW_FRAGMENT_SHADER: &str = "#version 100
 precision lowp float;
 
 varying vec2 uv;
@@ -511,7 +509,7 @@ void main() {
     }
 ";
 
-const DEFAULT_VERTEX_SHADER: &'static str = "#version 100
+const DEFAULT_VERTEX_SHADER: &str = "#version 100
 precision lowp float;
 
 attribute vec3 position;
@@ -562,7 +560,7 @@ struct Debug {
     mouse: usize,
 }
 static mut DEBUG: Debug = Debug {
-    mouse_cam: true,
+    mouse_cam: false,
     mouse: 0,
 };
 struct Game<'a> {
@@ -703,19 +701,20 @@ impl<'a> Game<'a> {
                 (mouse.size.x, mouse.size.y),
             ];
             for p in collisions.iter() {
-                let map_pos = (mouse.pos + mouse.direction * mouse.speed + vec2(p.0, p.1))
-                    / (16.0 * MAP_SCALE_FACTOR);
-                if self.map.width * map_pos.y as u32 + map_pos.x as u32
-                    >= self.map.tiles.len() as u32
+                let map_pos =
+                    (mouse.pos + mouse.direction * mouse.speed * get_frame_time() + vec2(p.0, p.1))
+                        / (16.0 * MAP_SCALE_FACTOR);
+                if map_pos.y as usize * self.map.width as usize + map_pos.x as usize + 1
+                    > self.map.tiles.len()
                 {
+                    println!("illegal mouse");
                     break;
                 }
-                let map_pos =
-                    (mouse.pos + mouse.direction + vec2(p.0, p.1)) / (16.0 * MAP_SCALE_FACTOR);
                 let pottential_collider = &self.map.tiles
                     [map_pos.y as usize * self.map.width as usize + map_pos.x as usize];
 
                 if pottential_collider.collision {
+                    println!("collid");
                     let x0 = map_pos.x.floor() * 16.0 * MAP_SCALE_FACTOR - p.0;
                     let x1 = (map_pos.x.floor() + 1.0) * MAP_SCALE_FACTOR * 16.0 - p.0;
                     let y0 = map_pos.y.floor() * 16.0 * MAP_SCALE_FACTOR - p.1;
@@ -723,16 +722,20 @@ impl<'a> Game<'a> {
                     if mouse.pos.y + mouse.direction.y != y0 {
                         mouse.pos.x = mouse.pos.x.clamp(x0, x1);
                         mouse.pos.y = mouse.pos.y.clamp(y0, y1);
+
+                        // mouse.direction.x += rand::gen_range(-0.4, 0.4);
+                        // mouse.direction.y += rand::gen_range(-0.4, 0.4);
+
                         if mouse.pos.x == x0 || mouse.pos.x == x1 {
-                            mouse.direction.x = 0.0;
+                            mouse.direction.x *= -1.0;
                         } else if mouse.pos.y == y0 || mouse.pos.y == y1 {
-                            mouse.direction.y = 0.0;
+                            mouse.direction.y *= -1.0;
                         }
                     }
                 }
             }
 
-            mouse.pos += mouse.direction * mouse.speed * get_frame_time();
+            mouse.pos += mouse.direction.normalize_or_zero() * mouse.speed * get_frame_time();
         }
     }
     fn fade_out_menu(&mut self) {
@@ -824,34 +827,11 @@ impl<'a> Game<'a> {
             RAINBOW_SHADER.set_uniform("time", get_time() as f32 * 8.0);
             self.draw_mice();
             self.mouse_eatery();
-            if is_key_pressed(KeyCode::G) {
-                self.mice.push(Mouse {
-                    speed: 150.0,
-                    scare_timer: 0.0,
-                    random_direction_cooldown: 0.0,
-                    is_rainbow: false,
-                    pos: vec2(200.0, 200.0),
-                    size: vec2(
-                        MOUSE_ANIMATION.0[0].0.width(),
-                        MOUSE_ANIMATION.0[0].0.height(),
-                    ),
-                    direction: Vec2::ZERO,
-                    animation: &MOUSE_ANIMATION,
-                });
-            }
+
             self.mouse_behaviour();
             self.cat.update(&self.map);
-            // self.spawner.update(&mut self.mice, &self.map);
-            unsafe {
-                if DEBUG.mouse_cam && is_mouse_button_pressed(MouseButton::Left) {
-                    DEBUG.mouse += 1;
-                }
-                if DEBUG.mouse_cam && self.mice.len() > 0 {
-                    self.camera.target = self.mice[DEBUG.mouse].pos;
-                } else {
-                    self.camera.target = self.cat.pos;
-                }
-            }
+            self.spawner.update(&mut self.mice, &self.map);
+
             self.draw_camera();
             self.draw_hud();
             if self.timer <= 0.0 {
@@ -983,7 +963,7 @@ impl Menu {
             );
         };
         draw_text(
-            &format!("High score: {}", self.high_score.to_string()),
+            &format!("High score: {}", self.high_score),
             10.0 * sf,
             (self.background.height() - 10.0) * sf,
             20.0 * sf,
