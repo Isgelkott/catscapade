@@ -400,6 +400,8 @@ fn load_tilemap(tilemap: &str, tileset: &str) -> (Vec<Tile>, u32) {
 struct Map {
     tiles: Vec<Tile>,
     width: u32,
+    real_width: f32,
+    real_height: f32,
 }
 impl Map {
     fn new() -> Self {
@@ -408,6 +410,8 @@ impl Map {
             include_str!("../assets/spritesheet.tsx"),
         );
         Self {
+            real_width: map.1 as f32 * 16.0 * MAP_SCALE_FACTOR,
+            real_height: (map.0.len() as u32 / map.1) as f32 * 16.0 * MAP_SCALE_FACTOR,
             tiles: map.0,
             width: map.1,
         }
@@ -563,7 +567,9 @@ static mut DEBUG: Debug = Debug {
     mouse_cam: false,
     mouse: 0,
 };
+
 struct Game<'a> {
+    minimap_cam: Camera2D,
     cat: Cat,
     mice: Vec<Mouse<'a>>,
     camera: Camera2D,
@@ -577,11 +583,14 @@ struct Game<'a> {
     kills: u32,
     clock: Texture2D,
     mouse_icon: Texture2D,
+    scale_factor: f32,
 }
 impl<'a> Game<'a> {
     fn new() -> Self {
         let button = load_ase_texture(include_bytes!("../assets/back.ase"), None, None);
         Self {
+            minimap_cam: create_camera(vec2(100.0, 100.0)),
+            scale_factor: 0.0,
             mouse_icon: load_ase_texture(include_bytes!("../assets/mouse_icon.ase"), None, None),
             clock: load_ase_texture(include_bytes!("../assets/clock.aseprite"), None, None),
             go_back_button: Button {
@@ -636,17 +645,13 @@ impl<'a> Game<'a> {
     }
     fn draw_camera(&self) {
         set_default_camera();
-
         draw_texture_ex(
             &self.camera.render_target.as_ref().unwrap().texture,
             0.0,
             0.0,
             WHITE,
             DrawTextureParams {
-                dest_size: Some(
-                    SCREEN_SIZE
-                        * (screen_width() / SCREEN_SIZE.x).min(screen_height() / SCREEN_SIZE.y),
-                ),
+                dest_size: Some(SCREEN_SIZE * self.scale_factor),
                 ..Default::default()
             },
         );
@@ -722,10 +727,6 @@ impl<'a> Game<'a> {
                     if mouse.pos.y + mouse.direction.y != y0 {
                         mouse.pos.x = mouse.pos.x.clamp(x0, x1);
                         mouse.pos.y = mouse.pos.y.clamp(y0, y1);
-
-                        // mouse.direction.x += rand::gen_range(-0.4, 0.4);
-                        // mouse.direction.y += rand::gen_range(-0.4, 0.4);
-
                         if mouse.pos.x == x0 || mouse.pos.x == x1 {
                             mouse.direction.x *= -1.0;
                         } else if mouse.pos.y == y0 || mouse.pos.y == y1 {
@@ -786,7 +787,7 @@ impl<'a> Game<'a> {
             self.go_to_menu = true;
         }
     }
-    fn draw_hud(&self) {
+    fn draw_hud(&mut self) {
         set_default_camera();
 
         draw_text(
@@ -817,12 +818,16 @@ impl<'a> Game<'a> {
                 ..Default::default()
             },
         );
+
         set_camera(&self.camera);
     }
     async fn update(&mut self) {
         if self.done {
             self.fade_out_menu();
         } else {
+            self.scale_factor =
+                (screen_width() / SCREEN_SIZE.x).min(screen_height() / SCREEN_SIZE.y);
+
             self.map.draw_map();
             RAINBOW_SHADER.set_uniform("time", get_time() as f32 * 8.0);
             self.draw_mice();
@@ -831,7 +836,7 @@ impl<'a> Game<'a> {
             self.mouse_behaviour();
             self.cat.update(&self.map);
             self.spawner.update(&mut self.mice, &self.map);
-
+            self.camera.target = self.cat.pos;
             self.draw_camera();
             self.draw_hud();
             if self.timer <= 0.0 {
